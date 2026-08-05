@@ -35,9 +35,13 @@ constexpr long MOTOR_CONTINUOUS_STEPS = 1000000;
 constexpr int SERVO_DOCK_ANGLE = 0;
 constexpr int SERVO_UNDOCK_ANGLE = 270;
 
-// Servo timing — no feedback wire connected, use time-based verification
-// Adjust SERVO_SETTLE_MS if the servo hasn't finished moving in time
-constexpr unsigned long SERVO_SETTLE_MS = 2000;  // 2 seconds for servo to reach target
+// Servo speed control — degrees per second
+// Lower = slower. 270° travel at 45°/s takes 6 seconds.
+// At full speed (~300°/s) it takes ~1s. Adjust to taste.
+constexpr float SERVO_SPEED_DEG_PER_SEC = 45.0f;  // degrees per second
+
+// Step interval in ms derived from speed (do not edit)
+constexpr unsigned long SERVO_STEP_INTERVAL_MS = 20; // update every 20ms
 
 // --- BLE Configuration ---
 #define BLE_DEVICE_NAME        "DockController"

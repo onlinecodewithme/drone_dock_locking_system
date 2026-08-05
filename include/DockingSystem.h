@@ -38,4 +38,13 @@ private:
     // Transient completion flags — set for one cycle so BLE can notify
     bool undockingJustCompleted;
     bool dockingJustCompleted;
+
+    // Software servo speed control
+    float servoCurrentAngle;
+    int   servoTargetAngle;
+    unsigned long servoLastStepTime;
+    bool  servoMoving;
+
+    void startServo(int targetAngle);   // begin a slow sweep
+    bool updateServo();                 // call every loop; returns true when done
 };
