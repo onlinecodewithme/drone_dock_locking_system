@@ -7,9 +7,9 @@ enum class SystemState {
     UNDOCKING_M1,
     UNDOCKING_M2,
     UNDOCKING_SERVO,
-    DOCKING_SERVO,
     DOCKING_M2,
     DOCKING_M1,
+    DOCKING_SERVO,
     ERROR
 };
 

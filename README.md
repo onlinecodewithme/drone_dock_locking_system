@@ -177,17 +177,15 @@ stateDiagram-v2
     IDLE --> UNDOCKING_M1 : UNDOCK command
     UNDOCKING_M1 --> UNDOCKING_M2 : M1 undock limit hit
     UNDOCKING_M2 --> UNDOCKING_SERVO : M2 undock limit hit
-    UNDOCKING_SERVO --> IDLE : Servo reaches 270° (feedback confirmed)
+    UNDOCKING_SERVO --> IDLE : Servo settles at 270° (2s timer)
 
-    IDLE --> DOCKING_SERVO : DOCK command
-    DOCKING_SERVO --> DOCKING_M2 : Servo reaches 0° (feedback confirmed)
+    IDLE --> DOCKING_M2 : DOCK command
     DOCKING_M2 --> DOCKING_M1 : M2 dock limit hit
-    DOCKING_M1 --> IDLE : M1 dock limit hit
+    DOCKING_M1 --> DOCKING_SERVO : M1 dock limit hit
+    DOCKING_SERVO --> IDLE : Servo settles at 0° (2s timer)
 
     UNDOCKING_M1 --> ERROR : Motor stopped without limit
     UNDOCKING_M2 --> ERROR : Motor stopped without limit
-    UNDOCKING_SERVO --> ERROR : Servo timeout (3s)
-    DOCKING_SERVO --> ERROR : Servo timeout (3s)
     DOCKING_M2 --> ERROR : Motor stopped without limit
     DOCKING_M1 --> ERROR : Motor stopped without limit
 ```
@@ -196,18 +194,18 @@ stateDiagram-v2
 
 | Step | State | Action | Exit Condition |
 |------|-------|--------|----------------|
-| 1 | `UNDOCKING_M1` | Motor 1 rotates in **positive** direction | M1 undock limit switch triggers (GPIO 32 → LOW) |
-| 2 | `UNDOCKING_M2` | Motor 2 rotates in **positive** direction | M2 undock limit switch triggers (GPIO 18 → LOW) |
-| 3 | `UNDOCKING_SERVO` | Servo commanded to **270°** | Servo feedback ADC reads within `SERVO_FB_UNDOCK_MIN..MAX` range |
+| 1 | `UNDOCKING_M1` | Motor 1 rotates to **undock** direction | M1 undock limit switch triggers (GPIO 32 → LOW) |
+| 2 | `UNDOCKING_M2` | Motor 2 rotates to **undock** direction | M2 undock limit switch triggers (GPIO 18 → LOW) |
+| 3 | `UNDOCKING_SERVO` | Servo commanded to **270°** | 2-second settle timer |
 | 4 | `IDLE` | Prints `UNDOCKING_COMPLETE` via serial | — |
 
 ### DOCK Sequence (detailed)
 
 | Step | State | Action | Exit Condition |
 |------|-------|--------|----------------|
-| 1 | `DOCKING_SERVO` | Servo commanded to **0°** | Servo feedback ADC reads within `SERVO_FB_DOCK_MIN..MAX` range |
-| 2 | `DOCKING_M2` | Motor 2 rotates in **negative** direction | M2 dock limit switch triggers (GPIO 19 → LOW) |
-| 3 | `DOCKING_M1` | Motor 1 rotates in **negative** direction | M1 dock limit switch triggers (GPIO 33 → LOW) |
+| 1 | `DOCKING_M2` | Motor 2 rotates to **dock** direction | M2 dock limit switch triggers (GPIO 19 → LOW) |
+| 2 | `DOCKING_M1` | Motor 1 rotates to **dock** direction | M1 dock limit switch triggers (GPIO 33 → LOW) |
+| 3 | `DOCKING_SERVO` | Servo commanded to **0°** | 2-second settle timer |
 | 4 | `IDLE` | Prints `DOCKING_COMPLETE` via serial | — |
 
 ### Error Handling
@@ -292,9 +290,9 @@ The Status characteristic contains one of these UTF-8 strings:
 | `UNDOCKING_M2` | Motor 2 is undocking |
 | `UNDOCKING_SERVO` | Servo moving to 270° |
 | `UNDOCKING_COMPLETE` | Undock sequence finished successfully |
-| `DOCKING_SERVO` | Servo moving to 0° |
 | `DOCKING_M2` | Motor 2 is docking |
 | `DOCKING_M1` | Motor 1 is docking |
+| `DOCKING_SERVO` | Servo moving to 0° |
 | `DOCKING_COMPLETE` | Dock sequence finished successfully |
 | `ERROR` | A fault occurred (motor or servo) |
 

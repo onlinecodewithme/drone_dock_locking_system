@@ -21,7 +21,7 @@ void DockingSystem::commandUndock() {
         Serial.println("System busy, cannot undock.");
         return;
     }
-    Serial.println("Starting UNDOCK sequence...");
+    Serial.println("Starting UNDOCK sequence: M1 -> M2 -> SERVO");
     currentState = SystemState::UNDOCKING_M1;
     motor1.startUndocking();
 }
@@ -31,10 +31,9 @@ void DockingSystem::commandDock() {
         Serial.println("System busy, cannot dock.");
         return;
     }
-    Serial.println("Starting DOCK sequence...");
-    currentState = SystemState::DOCKING_SERVO;
-    servo.write(SERVO_DOCK_ANGLE);
-    stateStartTime = millis();
+    Serial.println("Starting DOCK sequence: M2 -> M1 -> SERVO");
+    currentState = SystemState::DOCKING_M2;
+    motor2.startDocking();
 }
 
 SystemState DockingSystem::getState() const {
@@ -51,9 +50,9 @@ const char* DockingSystem::getStateString() const {
         case SystemState::UNDOCKING_M1:    return "UNDOCKING_M1";
         case SystemState::UNDOCKING_M2:    return "UNDOCKING_M2";
         case SystemState::UNDOCKING_SERVO: return "UNDOCKING_SERVO";
-        case SystemState::DOCKING_SERVO:   return "DOCKING_SERVO";
         case SystemState::DOCKING_M2:      return "DOCKING_M2";
         case SystemState::DOCKING_M1:      return "DOCKING_M1";
+        case SystemState::DOCKING_SERVO:   return "DOCKING_SERVO";
         case SystemState::ERROR:           return "ERROR";
         default:                           return "UNKNOWN";
     }
@@ -82,9 +81,9 @@ void DockingSystem::update() {
     switch (currentState) {
         case SystemState::IDLE:
         case SystemState::ERROR:
-            // Do nothing
             break;
 
+        // ── UNDOCK: M1 → M2 → SERVO ──────────────────────────────────────
         case SystemState::UNDOCKING_M1:
             if (!motor1.isMoving()) {
                 if (motor1.isUndocked()) {
@@ -113,7 +112,6 @@ void DockingSystem::update() {
             break;
 
         case SystemState::UNDOCKING_SERVO:
-            // Time-based: wait for servo to physically reach target
             if (millis() - stateStartTime >= SERVO_SETTLE_MS) {
                 Serial.println("Servo reached 270. UNDOCKING_COMPLETE");
                 undockingJustCompleted = true;
@@ -121,19 +119,11 @@ void DockingSystem::update() {
             }
             break;
 
-        case SystemState::DOCKING_SERVO:
-            // Time-based: wait for servo to physically reach target
-            if (millis() - stateStartTime >= SERVO_SETTLE_MS) {
-                Serial.println("Servo reached 0. Starting M2 reverse...");
-                currentState = SystemState::DOCKING_M2;
-                motor2.startDocking();
-            }
-            break;
-
+        // ── DOCK: M2 → M1 → SERVO ────────────────────────────────────────
         case SystemState::DOCKING_M2:
             if (!motor2.isMoving()) {
                 if (motor2.isDocked()) {
-                    Serial.println("M2 Docked. Starting M1 reverse...");
+                    Serial.println("M2 Docked. Starting M1...");
                     currentState = SystemState::DOCKING_M1;
                     motor1.startDocking();
                 } else {
@@ -146,13 +136,22 @@ void DockingSystem::update() {
         case SystemState::DOCKING_M1:
             if (!motor1.isMoving()) {
                 if (motor1.isDocked()) {
-                    Serial.println("DOCKING_COMPLETE");
-                    dockingJustCompleted = true;
-                    currentState = SystemState::IDLE;
+                    Serial.println("M1 Docked. Moving Servo to 0...");
+                    currentState = SystemState::DOCKING_SERVO;
+                    servo.write(SERVO_DOCK_ANGLE);
+                    stateStartTime = millis();
                 } else {
                     Serial.println("ERROR: M1 stopped but not docked.");
                     currentState = SystemState::ERROR;
                 }
+            }
+            break;
+
+        case SystemState::DOCKING_SERVO:
+            if (millis() - stateStartTime >= SERVO_SETTLE_MS) {
+                Serial.println("Servo reached 0. DOCKING_COMPLETE");
+                dockingJustCompleted = true;
+                currentState = SystemState::IDLE;
             }
             break;
     }
