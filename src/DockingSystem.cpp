@@ -12,14 +12,19 @@ void DockingSystem::init() {
     motor1.init();
     motor2.init();
     
+    // Load last servo angle from NVS (survives power cycles)
+    int savedAngle = loadServoAngle();
+    servoCurrentAngle = savedAngle;
+    servoTargetAngle  = savedAngle;
+    
     // Servo configuration for 270 degrees (common range: 500-2500us)
     servo.setPeriodHertz(50);
     servo.attach(SERVO_PIN, 500, 2500);
-
-    // Park servo at dock position on startup
-    servoCurrentAngle = SERVO_DOCK_ANGLE;
-    servoTargetAngle  = SERVO_DOCK_ANGLE;
-    servo.write(servoCurrentAngle);
+    servo.write(savedAngle);  // restore to last known position — no movement
+    
+    Serial.print("[SERVO] Restored to ");
+    Serial.print(savedAngle);
+    Serial.println("° from NVS");
 }
 
 void DockingSystem::commandUndock() {
@@ -75,12 +80,28 @@ bool DockingSystem::updateServo() {
 
     if ((int)servoCurrentAngle == servoTargetAngle) {
         servoMoving = false;
+        saveServoAngle(servoTargetAngle);  // persist to NVS
         Serial.print("[SERVO] Reached ");
         Serial.print(servoTargetAngle);
-        Serial.println("°");
+        Serial.println("° (saved to NVS)");
         return true; // done
     }
     return false; // still moving
+}
+
+// --- NVS persistence ---
+
+void DockingSystem::saveServoAngle(int angle) {
+    prefs.begin("dock", false);  // read-write
+    prefs.putInt("servoAngle", angle);
+    prefs.end();
+}
+
+int DockingSystem::loadServoAngle() {
+    prefs.begin("dock", true);  // read-only
+    int angle = prefs.getInt("servoAngle", SERVO_DOCK_ANGLE);  // default to 0° if first boot
+    prefs.end();
+    return angle;
 }
 
 SystemState DockingSystem::getState() const {

@@ -22,7 +22,6 @@ constexpr uint8_t M2_DOCK_LIMIT_PIN = 19;   // Changed from 35 (input-only, no p
 
 // Servo
 constexpr uint8_t SERVO_PIN = 2; // Suitable for PWM
-constexpr uint8_t SERVO_FEEDBACK_PIN = 36; // ADC1 pin (VP)
 
 // --- Constants ---
 constexpr float MOTOR_MAX_SPEED = 1000.0f; // steps per second

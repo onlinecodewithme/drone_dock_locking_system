@@ -1,6 +1,7 @@
 #pragma once
 #include "MotorController.h"
 #include <ESP32Servo.h>
+#include <Preferences.h>
 
 enum class SystemState {
     IDLE,
@@ -30,6 +31,7 @@ private:
     MotorController motor1;
     MotorController motor2;
     Servo servo;
+    Preferences prefs;  // NVS for persisting servo position
 
     SystemState currentState;
     SystemState lastReportedState;
@@ -47,4 +49,6 @@ private:
 
     void startServo(int targetAngle);   // begin a slow sweep
     bool updateServo();                 // call every loop; returns true when done
+    void saveServoAngle(int angle);     // persist to NVS
+    int  loadServoAngle();              // read from NVS
 };
