@@ -47,6 +47,42 @@ void DockingSystem::commandDock() {
     motor2.startDocking();
 }
 
+void DockingSystem::commandReset() {
+    Serial.println("[RESET] Stopping all actuators...");
+    
+    // Stop both motors immediately
+    motor1.stop();
+    motor2.stop();
+    
+    // Cancel any servo sweep in progress (stay at current angle)
+    servoMoving = false;
+    
+    // Clear completion flags
+    undockingJustCompleted = false;
+    dockingJustCompleted = false;
+    
+    // Return to IDLE
+    currentState = SystemState::IDLE;
+    lastReportedState = SystemState::IDLE;
+    
+    Serial.println("[RESET] System recovered. State: IDLE");
+}
+
+void DockingSystem::commandStatus() {
+    Serial.print("[STATUS] State=");
+    Serial.print(getStateString());
+    Serial.print(" ServoAngle=");
+    Serial.print((int)servoCurrentAngle);
+    Serial.print(" M1_undock=");
+    Serial.print(motor1.isUndocked() ? "HIT" : "open");
+    Serial.print(" M1_dock=");
+    Serial.print(motor1.isDocked() ? "HIT" : "open");
+    Serial.print(" M2_undock=");
+    Serial.print(motor2.isUndocked() ? "HIT" : "open");
+    Serial.print(" M2_dock=");
+    Serial.println(motor2.isDocked() ? "HIT" : "open");
+}
+
 // --- Internal servo helpers ---
 
 void DockingSystem::startServo(int targetAngle) {

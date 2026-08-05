@@ -40,8 +40,12 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
             pSystemRef->commandUndock();
         } else if (value == "DOCK") {
             pSystemRef->commandDock();
+        } else if (value == "RESET") {
+            pSystemRef->commandReset();
+        } else if (value == "STATUS") {
+            pSystemRef->commandStatus();
         } else {
-            Serial.println("[BLE] Unknown command. Use DOCK or UNDOCK.");
+            Serial.println("[BLE] Unknown command. Use DOCK, UNDOCK, RESET, STATUS.");
         }
     }
 };

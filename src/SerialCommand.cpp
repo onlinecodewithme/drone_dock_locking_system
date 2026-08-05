@@ -12,8 +12,12 @@ void SerialCommand::update() {
             system.commandUndock();
         } else if (cmd == "DOCK") {
             system.commandDock();
+        } else if (cmd == "RESET") {
+            system.commandReset();
+        } else if (cmd == "STATUS") {
+            system.commandStatus();
         } else if (cmd.length() > 0) {
-            Serial.println("Unknown command. Valid commands: DOCK, UNDOCK");
+            Serial.println("Unknown command. Valid: DOCK, UNDOCK, RESET, STATUS");
         }
     }
 }

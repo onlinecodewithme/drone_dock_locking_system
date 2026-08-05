@@ -22,6 +22,8 @@ public:
 
     void commandUndock();
     void commandDock();
+    void commandReset();    // recover from ERROR or cancel operation
+    void commandStatus();   // print full system status
 
     SystemState getState() const;
     const char* getStateString() const;
