@@ -1,30 +1,25 @@
 #include "DockingSystem.h"
 #include "Config.h"
 
-DockingSystem::DockingSystem() 
-    : motor1(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN),
-      motor2(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN),
+DockingSystem::DockingSystem()
+    : motor1(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true),
+      motor2(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false),
+      motorProp(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN),
       currentState(SystemState::IDLE), lastReportedState(SystemState::IDLE),
       stateStartTime(0), undockingJustCompleted(false), dockingJustCompleted(false),
-      servoCurrentAngle(0), servoTargetAngle(0), servoLastStepTime(0), servoMoving(false) {}
+      testMotor(nullptr), testStartTime(0) {}
 
 void DockingSystem::init() {
     motor1.init();
     motor2.init();
-    
-    // Load last servo angle from NVS (survives power cycles)
-    int savedAngle = loadServoAngle();
-    servoCurrentAngle = savedAngle;
-    servoTargetAngle  = savedAngle;
-    
-    // Servo configuration for 270 degrees (common range: 500-2500us)
-    servo.setPeriodHertz(50);
-    servo.attach(SERVO_PIN, 500, 2500);
-    servo.write(savedAngle);  // restore to last known position — no movement
-    
-    Serial.print("[SERVO] Restored to ");
-    Serial.print(savedAngle);
-    Serial.println("° from NVS");
+    motorProp.init();
+
+    // Propeller closer must always rest closed — enforce it at boot in case
+    // power was lost mid-cycle. motorProp.isDocked() == close limit triggered.
+    if (!motorProp.isDocked()) {
+        Serial.println("[PROP] Not at close limit on boot — closing...");
+        motorProp.startDocking();
+    }
 }
 
 void DockingSystem::commandUndock() {
@@ -32,7 +27,7 @@ void DockingSystem::commandUndock() {
         Serial.println("System busy, cannot undock.");
         return;
     }
-    Serial.println("Starting UNDOCK sequence: M1 -> M2 -> SERVO");
+    Serial.println("Starting UNDOCK sequence: M1 -> M2");
     currentState = SystemState::UNDOCKING_M1;
     motor1.startUndocking();
 }
@@ -42,37 +37,60 @@ void DockingSystem::commandDock() {
         Serial.println("System busy, cannot dock.");
         return;
     }
-    Serial.println("Starting DOCK sequence: M2 -> M1 -> SERVO");
+    Serial.println("Starting DOCK sequence: M2 -> M1 -> PROP_OPEN -> PROP_CLOSE");
     currentState = SystemState::DOCKING_M2;
     motor2.startDocking();
 }
 
+void DockingSystem::commandJog(int motorNum) {
+    if (currentState != SystemState::IDLE) {
+        Serial.println("System busy, cannot jog.");
+        return;
+    }
+
+    switch (motorNum) {
+        case 1: testMotor = &motor1; break;
+        case 2: testMotor = &motor2; break;
+        case 3: testMotor = &motorProp; break;
+        default:
+            Serial.println("Unknown motor. Valid: JOG1, JOG2, JOG3");
+            return;
+    }
+
+    Serial.print("[JOG] Spinning motor ");
+    Serial.print(motorNum);
+    Serial.print(" for ");
+    Serial.print(JOG_DURATION_MS);
+    Serial.println("ms...");
+
+    testStartTime = millis();
+    currentState = SystemState::TESTING;
+    testMotor->jog(true); // spins toward "undock"/"open" direction, ignoring limit switches
+}
+
 void DockingSystem::commandReset() {
     Serial.println("[RESET] Stopping all actuators...");
-    
-    // Stop both motors immediately
+
+    // Stop all motors immediately
     motor1.stop();
     motor2.stop();
-    
-    // Cancel any servo sweep in progress (stay at current angle)
-    servoMoving = false;
-    
+    motorProp.stop();
+    testMotor = nullptr;
+
     // Clear completion flags
     undockingJustCompleted = false;
     dockingJustCompleted = false;
-    
+
     // Return to IDLE
     currentState = SystemState::IDLE;
     lastReportedState = SystemState::IDLE;
-    
+
     Serial.println("[RESET] System recovered. State: IDLE");
 }
 
 void DockingSystem::commandStatus() {
     Serial.print("[STATUS] State=");
     Serial.print(getStateString());
-    Serial.print(" ServoAngle=");
-    Serial.print((int)servoCurrentAngle);
     Serial.print(" M1_undock=");
     Serial.print(motor1.isUndocked() ? "HIT" : "open");
     Serial.print(" M1_dock=");
@@ -80,64 +98,11 @@ void DockingSystem::commandStatus() {
     Serial.print(" M2_undock=");
     Serial.print(motor2.isUndocked() ? "HIT" : "open");
     Serial.print(" M2_dock=");
-    Serial.println(motor2.isDocked() ? "HIT" : "open");
-}
-
-// --- Internal servo helpers ---
-
-void DockingSystem::startServo(int targetAngle) {
-    servoTargetAngle   = targetAngle;
-    servoLastStepTime  = millis();
-    servoMoving        = true;
-    Serial.print("[SERVO] Sweeping from ");
-    Serial.print(servoCurrentAngle);
-    Serial.print("° to ");
-    Serial.print(targetAngle);
-    Serial.println("°...");
-}
-
-bool DockingSystem::updateServo() {
-    if (!servoMoving) return true; // already at target
-
-    unsigned long now = millis();
-    if (now - servoLastStepTime < SERVO_STEP_INTERVAL_MS) return false;
-    servoLastStepTime = now;
-
-    // Degrees to move this step
-    float degreesPerStep = SERVO_SPEED_DEG_PER_SEC * (SERVO_STEP_INTERVAL_MS / 1000.0f);
-
-    if (servoCurrentAngle < servoTargetAngle) {
-        servoCurrentAngle = min((float)servoTargetAngle, servoCurrentAngle + degreesPerStep);
-    } else if (servoCurrentAngle > servoTargetAngle) {
-        servoCurrentAngle = max((float)servoTargetAngle, servoCurrentAngle - degreesPerStep);
-    }
-
-    servo.write((int)servoCurrentAngle);
-
-    if ((int)servoCurrentAngle == servoTargetAngle) {
-        servoMoving = false;
-        saveServoAngle(servoTargetAngle);  // persist to NVS
-        Serial.print("[SERVO] Reached ");
-        Serial.print(servoTargetAngle);
-        Serial.println("° (saved to NVS)");
-        return true; // done
-    }
-    return false; // still moving
-}
-
-// --- NVS persistence ---
-
-void DockingSystem::saveServoAngle(int angle) {
-    prefs.begin("dock", false);  // read-write
-    prefs.putInt("servoAngle", angle);
-    prefs.end();
-}
-
-int DockingSystem::loadServoAngle() {
-    prefs.begin("dock", true);  // read-only
-    int angle = prefs.getInt("servoAngle", SERVO_DOCK_ANGLE);  // default to 0° if first boot
-    prefs.end();
-    return angle;
+    Serial.print(motor2.isDocked() ? "HIT" : "open");
+    Serial.print(" Prop_open=");
+    Serial.print(motorProp.isUndocked() ? "HIT" : "open");
+    Serial.print(" Prop_close=");
+    Serial.println(motorProp.isDocked() ? "HIT" : "open");
 }
 
 SystemState DockingSystem::getState() const {
@@ -150,15 +115,16 @@ const char* DockingSystem::getStateString() const {
     if (dockingJustCompleted)  return "DOCKING_COMPLETE";
 
     switch (currentState) {
-        case SystemState::IDLE:            return "IDLE";
-        case SystemState::UNDOCKING_M1:    return "UNDOCKING_M1";
-        case SystemState::UNDOCKING_M2:    return "UNDOCKING_M2";
-        case SystemState::UNDOCKING_SERVO: return "UNDOCKING_SERVO";
-        case SystemState::DOCKING_M2:      return "DOCKING_M2";
-        case SystemState::DOCKING_M1:      return "DOCKING_M1";
-        case SystemState::DOCKING_SERVO:   return "DOCKING_SERVO";
-        case SystemState::ERROR:           return "ERROR";
-        default:                           return "UNKNOWN";
+        case SystemState::IDLE:               return "IDLE";
+        case SystemState::UNDOCKING_M1:       return "UNDOCKING_M1";
+        case SystemState::UNDOCKING_M2:       return "UNDOCKING_M2";
+        case SystemState::DOCKING_M2:         return "DOCKING_M2";
+        case SystemState::DOCKING_M1:         return "DOCKING_M1";
+        case SystemState::DOCKING_PROP_OPEN:  return "DOCKING_PROP_OPEN";
+        case SystemState::DOCKING_PROP_CLOSE: return "DOCKING_PROP_CLOSE";
+        case SystemState::TESTING:            return "TESTING";
+        case SystemState::ERROR:              return "ERROR";
+        default:                              return "UNKNOWN";
     }
 }
 
@@ -177,7 +143,7 @@ bool DockingSystem::stateChanged() {
 void DockingSystem::update() {
     motor1.update();
     motor2.update();
-    updateServo();  // always tick the servo sweep
+    motorProp.update();
 
     // Clear transient completion flags from the previous cycle
     undockingJustCompleted = false;
@@ -188,7 +154,8 @@ void DockingSystem::update() {
         case SystemState::ERROR:
             break;
 
-        // ── UNDOCK: M1 → M2 → SERVO ──────────────────────────────────────
+        // ── UNDOCK: M1 → M2 ──────────────────────────────────────────────
+        // Propeller closer is not touched during undock — it stays closed.
         case SystemState::UNDOCKING_M1:
             if (!motor1.isMoving()) {
                 if (motor1.isUndocked()) {
@@ -205,9 +172,9 @@ void DockingSystem::update() {
         case SystemState::UNDOCKING_M2:
             if (!motor2.isMoving()) {
                 if (motor2.isUndocked()) {
-                    Serial.println("M2 Undocked. Sweeping Servo to 270...");
-                    currentState = SystemState::UNDOCKING_SERVO;
-                    startServo(SERVO_UNDOCK_ANGLE);
+                    Serial.println("UNDOCKING_COMPLETE");
+                    undockingJustCompleted = true;
+                    currentState = SystemState::IDLE;
                 } else {
                     Serial.println("ERROR: M2 stopped but not undocked.");
                     currentState = SystemState::ERROR;
@@ -215,15 +182,7 @@ void DockingSystem::update() {
             }
             break;
 
-        case SystemState::UNDOCKING_SERVO:
-            if (updateServo()) {
-                Serial.println("UNDOCKING_COMPLETE");
-                undockingJustCompleted = true;
-                currentState = SystemState::IDLE;
-            }
-            break;
-
-        // ── DOCK: M2 → M1 → SERVO ────────────────────────────────────────
+        // ── DOCK: M2 → M1 → PROP_OPEN → PROP_CLOSE ───────────────────────
         case SystemState::DOCKING_M2:
             if (!motor2.isMoving()) {
                 if (motor2.isDocked()) {
@@ -240,9 +199,9 @@ void DockingSystem::update() {
         case SystemState::DOCKING_M1:
             if (!motor1.isMoving()) {
                 if (motor1.isDocked()) {
-                    Serial.println("M1 Docked. Sweeping Servo to 0...");
-                    currentState = SystemState::DOCKING_SERVO;
-                    startServo(SERVO_DOCK_ANGLE);
+                    Serial.println("M1 Docked. Opening propeller closer...");
+                    currentState = SystemState::DOCKING_PROP_OPEN;
+                    motorProp.startUndocking(); // rotates toward the open limit
                 } else {
                     Serial.println("ERROR: M1 stopped but not docked.");
                     currentState = SystemState::ERROR;
@@ -250,10 +209,38 @@ void DockingSystem::update() {
             }
             break;
 
-        case SystemState::DOCKING_SERVO:
-            if (updateServo()) {
-                Serial.println("DOCKING_COMPLETE");
-                dockingJustCompleted = true;
+        case SystemState::DOCKING_PROP_OPEN:
+            if (!motorProp.isMoving()) {
+                if (motorProp.isUndocked()) { // open limit hit
+                    Serial.println("Propeller closer open. Closing again...");
+                    currentState = SystemState::DOCKING_PROP_CLOSE;
+                    motorProp.startDocking(); // rotates back toward the close limit
+                } else {
+                    Serial.println("ERROR: Propeller closer stopped but not open.");
+                    currentState = SystemState::ERROR;
+                }
+            }
+            break;
+
+        case SystemState::DOCKING_PROP_CLOSE:
+            if (!motorProp.isMoving()) {
+                if (motorProp.isDocked()) { // close limit hit
+                    Serial.println("DOCKING_COMPLETE");
+                    dockingJustCompleted = true;
+                    currentState = SystemState::IDLE;
+                } else {
+                    Serial.println("ERROR: Propeller closer stopped but not closed.");
+                    currentState = SystemState::ERROR;
+                }
+            }
+            break;
+
+        // ── TESTING: bench jog for a fixed JOG_DURATION_MS, ignoring limits ──
+        case SystemState::TESTING:
+            if (millis() - testStartTime >= JOG_DURATION_MS) {
+                testMotor->stop();
+                testMotor = nullptr;
+                Serial.println("[JOG] Done.");
                 currentState = SystemState::IDLE;
             }
             break;

@@ -11,7 +11,9 @@ constexpr uint8_t M1_ENABLE_PIN = 27;
 
 // Motor 2 (e.g., Right side)
 constexpr uint8_t M2_STEP_PIN = 14;
-constexpr uint8_t M2_DIR_PIN = 12;
+constexpr uint8_t M2_DIR_PIN = 23; // Moved from 12 — GPIO12 is a flash-voltage strapping pin;
+                                    // if pulled HIGH at boot (e.g. by driver board wiring) it
+                                    // makes the ESP32 mis-configure flash voltage and fail to boot.
 constexpr uint8_t M2_ENABLE_PIN = 13;
 
 // Limit Switches (Active LOW assumed)
@@ -20,27 +22,28 @@ constexpr uint8_t M1_DOCK_LIMIT_PIN = 33;
 constexpr uint8_t M2_UNDOCK_LIMIT_PIN = 18; // Changed from 34 (input-only, no pull-up)
 constexpr uint8_t M2_DOCK_LIMIT_PIN = 19;   // Changed from 35 (input-only, no pull-up)
 
-// Servo
-constexpr uint8_t SERVO_PIN = 2; // Suitable for PWM
+// Motor 3 (Propeller Closer)
+constexpr uint8_t M3_STEP_PIN = 4;
+constexpr uint8_t M3_DIR_PIN = 5;
+constexpr uint8_t M3_ENABLE_PIN = 15;
+
+// Propeller Closer Limit Switches (Active LOW assumed)
+constexpr uint8_t M3_OPEN_LIMIT_PIN = 21;
+constexpr uint8_t M3_CLOSE_LIMIT_PIN = 22;
 
 // --- Constants ---
-constexpr float MOTOR_MAX_SPEED = 1000.0f; // steps per second
+constexpr float MOTOR_MAX_SPEED = 75.0f; // steps per second
 constexpr float MOTOR_ACCELERATION = 500.0f;
 
 // For continuous rotation during docking/undocking, we can just set a very large target position
 constexpr long MOTOR_CONTINUOUS_STEPS = 1000000;
 
-// Servo Angles
-constexpr int SERVO_DOCK_ANGLE = 0;
-constexpr int SERVO_UNDOCK_ANGLE = 270;
+// Bench-test jog duration (JOG1/JOG2/JOG3 serial commands)
+constexpr unsigned long JOG_DURATION_MS = 5000;
 
-// Servo speed control — degrees per second
-// Lower = slower. 270° travel at 45°/s takes 6 seconds.
-// At full speed (~300°/s) it takes ~1s. Adjust to taste.
-constexpr float SERVO_SPEED_DEG_PER_SEC = 45.0f;  // degrees per second
-
-// Step interval in ms derived from speed (do not edit)
-constexpr unsigned long SERVO_STEP_INTERVAL_MS = 20; // update every 20ms
+// Limit switch debounce — a reading must hold steady this long before it's trusted.
+// Filters brief noise spikes on limit switch lines (e.g. induced by motor start transients).
+constexpr unsigned long LIMIT_DEBOUNCE_MS = 30;
 
 // --- BLE Configuration ---
 #define BLE_DEVICE_NAME        "DockController"

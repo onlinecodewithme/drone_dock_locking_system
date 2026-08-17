@@ -1,16 +1,15 @@
 #pragma once
 #include "MotorController.h"
-#include <ESP32Servo.h>
-#include <Preferences.h>
 
 enum class SystemState {
     IDLE,
     UNDOCKING_M1,
     UNDOCKING_M2,
-    UNDOCKING_SERVO,
     DOCKING_M2,
     DOCKING_M1,
-    DOCKING_SERVO,
+    DOCKING_PROP_OPEN,
+    DOCKING_PROP_CLOSE,
+    TESTING,
     ERROR
 };
 
@@ -24,6 +23,7 @@ public:
     void commandDock();
     void commandReset();    // recover from ERROR or cancel operation
     void commandStatus();   // print full system status
+    void commandJog(int motorNum); // bench test: spin motor 1/2/3 for JOG_DURATION_MS
 
     SystemState getState() const;
     const char* getStateString() const;
@@ -32,8 +32,7 @@ public:
 private:
     MotorController motor1;
     MotorController motor2;
-    Servo servo;
-    Preferences prefs;  // NVS for persisting servo position
+    MotorController motorProp; // propeller closer — rests closed; opens/closes during dock stage only
 
     SystemState currentState;
     SystemState lastReportedState;
@@ -43,14 +42,6 @@ private:
     bool undockingJustCompleted;
     bool dockingJustCompleted;
 
-    // Software servo speed control
-    float servoCurrentAngle;
-    int   servoTargetAngle;
-    unsigned long servoLastStepTime;
-    bool  servoMoving;
-
-    void startServo(int targetAngle);   // begin a slow sweep
-    bool updateServo();                 // call every loop; returns true when done
-    void saveServoAngle(int angle);     // persist to NVS
-    int  loadServoAngle();              // read from NVS
+    MotorController* testMotor;
+    unsigned long testStartTime;
 };

@@ -1,6 +1,6 @@
 # ESP32 Docking Controller
 
-> Production-grade firmware for an automated docking/undocking mechanism using two NEMA-17 stepper motors, four limit switches, and one feedback servo — orchestrated by a non-blocking state machine on an ESP32-WROOM-32U. Supports both **Serial** and **BLE** command interfaces for integration with Raspberry Pi or any BLE central.
+> Production-grade firmware for an automated docking/undocking mechanism using three NEMA-17 stepper motors and six limit switches — orchestrated by a non-blocking state machine on an ESP32-WROOM-32U. Supports both **Serial** and **BLE** command interfaces for integration with Raspberry Pi or any BLE central.
 
 ---
 
@@ -16,26 +16,24 @@
 8. [BLE Communication](#ble-communication)
 9. [Configuration Reference](#configuration-reference)
 10. [Building & Flashing](#building--flashing)
-11. [Servo Feedback Calibration](#servo-feedback-calibration)
-12. [Troubleshooting](#troubleshooting)
-13. [License](#license)
+11. [Troubleshooting](#troubleshooting)
+12. [License](#license)
 
 ---
 
 ## Overview
 
-This system controls a two-stage mechanical docking mechanism. The workflow is entirely sequential and automated — the operator only issues a single `DOCK` or `UNDOCK` command via serial, and the firmware handles the full multi-step sequence internally.
+This system controls a three-stage mechanical docking mechanism. The workflow is entirely sequential and automated — the operator only issues a single `DOCK` or `UNDOCK` command via serial, and the firmware handles the full multi-step sequence internally.
 
 ### Key Features
 
 - **Non-blocking state machine** — no `delay()` calls in the main loop; serial remains responsive at all times.
 - **Dual command interface** — accepts commands via both USB Serial and Bluetooth Low Energy (BLE).
 - **BLE GATT server** — advertises as `DockController`; a Raspberry Pi (or any BLE central) can write commands and subscribe to real-time status notifications.
-- **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps.
-- **Hardware limit switches** on every endpoint (4 total) for safe, deterministic travel.
-- **Feedback servo verification** — the servo's built-in potentiometer is read via ADC to confirm it actually reached the target angle before the state machine advances.
-- **Timeout protection** — if the servo fails to reach its target within a configurable window, the system enters a safe `ERROR` state.
-- **Modular C++ architecture** — each concern (motors, servo, serial parsing, BLE, sequencing) is encapsulated in its own class.
+- **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps, used for all three motors.
+- **Hardware limit switches** on every endpoint (6 total) for safe, deterministic travel — no encoders or position feedback required.
+- **Propeller closer safety default** — the third motor always rests at its close limit; it only opens (to clear the propeller) and closes again as the final step of the dock sequence.
+- **Modular C++ architecture** — each concern (motors, serial parsing, BLE, sequencing) is encapsulated in its own class.
 
 ---
 
@@ -44,12 +42,10 @@ This system controls a two-stage mechanical docking mechanism. The workflow is e
 | Component             | Qty | Notes                                                    |
 |-----------------------|-----|----------------------------------------------------------|
 | ESP32-WROOM-32U       | 1   | Any ESP32 dev board works (NodeMCU-32S, DevKitC, etc.)   |
-| NEMA-17 Stepper Motor | 2   | Standard 1.8° / 200 steps-per-revolution                 |
-| A4988 or DRV8825      | 2   | Stepper driver modules                                   |
-| Feedback Servo        | 1   | 270° servo with analog feedback wire (4-wire servo)      |
-| Micro Limit Switches  | 4   | Normally Open (NO), wired to pull LOW when triggered      |
+| NEMA-17 Stepper Motor | 3   | Standard 1.8° / 200 steps-per-revolution (M1, M2, propeller closer) |
+| A4988 or DRV8825      | 3   | Stepper driver modules                                   |
+| Micro Limit Switches  | 6   | Normally Open (NO), wired to pull LOW when triggered      |
 | 12V Power Supply      | 1   | For stepper motors (sized for your NEMA-17 current draw) |
-| 5V Power Supply       | 1   | For servo (do NOT power from ESP32 3.3V rail)            |
 | Jumper Wires / PCB    | —   | For connections                                          |
 
 ---
@@ -64,20 +60,23 @@ This system controls a two-stage mechanical docking mechanism. The workflow is e
 | **Motor 1 DIR**       | `GPIO 26`  | OUTPUT    | Direction control                         |
 | **Motor 1 ENABLE**    | `GPIO 27`  | OUTPUT    | LOW = enabled, HIGH = disabled            |
 | **Motor 2 STEP**      | `GPIO 14`  | OUTPUT    | Pulse output to stepper driver STEP pin   |
-| **Motor 2 DIR**       | `GPIO 12`  | OUTPUT    | Direction control                         |
+| **Motor 2 DIR**       | `GPIO 23`  | OUTPUT    | Direction control                         |
 | **Motor 2 ENABLE**    | `GPIO 13`  | OUTPUT    | LOW = enabled, HIGH = disabled            |
 | **M1 Undock Limit**   | `GPIO 32`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
 | **M1 Dock Limit**     | `GPIO 33`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
 | **M2 Undock Limit**   | `GPIO 18`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
 | **M2 Dock Limit**     | `GPIO 19`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
-| **Servo PWM**         | `GPIO 2`   | OUTPUT    | 50 Hz PWM signal to servo                |
-| **Servo Feedback**    | `GPIO 36 (VP)` | INPUT | ADC1 channel — reads servo potentiometer |
+| **Motor 3 (Prop Closer) STEP** | `GPIO 4` | OUTPUT | Pulse output to stepper driver STEP pin |
+| **Motor 3 (Prop Closer) DIR**  | `GPIO 5` | OUTPUT | Direction control |
+| **Motor 3 (Prop Closer) ENABLE** | `GPIO 15` | OUTPUT | LOW = enabled, HIGH = disabled |
+| **M3 Open Limit**     | `GPIO 21`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
+| **M3 Close Limit**    | `GPIO 22`  | INPUT_PULLUP | Active LOW — switch connects to GND    |
 
-> **⚠️ Note:** GPIO 34, 35, 36, 39 are **input-only** on the ESP32 and do **not** have internal pull-up resistors. We intentionally avoid using them for limit switches. GPIO 36 (VP) is used only for analog servo feedback reading, where it works correctly.
+> **⚠️ Note:** GPIO 34, 35, 36, 39 are **input-only** on the ESP32 and do **not** have internal pull-up resistors. We intentionally avoid using them for limit switches.
 
 ### Limit Switch Wiring
 
-All four limit switches use the ESP32's internal pull-up resistors (`INPUT_PULLUP`). No external resistors are needed.
+All six limit switches use the ESP32's internal pull-up resistors (`INPUT_PULLUP`). No external resistors are needed.
 
 ```
   ESP32 GPIO (internal pull-up to 3.3V)
@@ -89,17 +88,6 @@ All four limit switches use the ESP32's internal pull-up resistors (`INPUT_PULLU
 
 - **Normal state (switch open):** GPIO reads `HIGH` (pulled up)
 - **Triggered state (switch pressed):** GPIO reads `LOW` (connected to GND)
-
-### Servo Wiring (4-Wire Feedback Servo)
-
-| Servo Wire | Connect To          |
-|------------|---------------------|
-| Red        | External 5V supply  |
-| Brown/Black| GND (shared with ESP32) |
-| Orange     | ESP32 GPIO 2        |
-| White (Feedback) | ESP32 GPIO 36 (VP) |
-
-> **⚠️ Critical:** Power the servo from a dedicated 5V supply, **not** from the ESP32's 3.3V or 5V pin. Servo stall current can exceed 1A, which will cause the ESP32 to brownout and reboot.
 
 ---
 
@@ -142,24 +130,24 @@ The system follows a clean **separation of concerns** pattern:
 │Parses serial│──│                      │──│ GATT server     │
 │commands     │  │ Orchestrates the     │  │ Writes commands  │
 │             │  │ multi-step sequence  │  │ Notifies status  │
-└─────────────┘  └───┬──────────┬───────┘  └─────────────────┘
-                     │          │
-         ┌───────────▼──┐  ┌────▼───────────┐
-         │MotorController│  │  ESP32Servo    │
-         │  (×2)        │  │  + ADC feedback │
-         │              │  │                 │
-         │ AccelStepper  │  │ servo.write()  │
-         │ + limit SW   │  │ analogRead()   │
-         └──────────────┘  └────────────────┘
+└─────────────┘  └───────────┬───────────┘  └─────────────────┘
+                              │
+                   ┌──────────▼──────────┐
+                   │   MotorController    │
+                   │        (×3)          │
+                   │                       │
+                   │  AccelStepper         │
+                   │  + limit switches     │
+                   └───────────────────────┘
 ```
 
 ### Module Descriptions
 
 | Module | File(s) | Responsibility |
 |--------|---------|----------------|
-| **Config** | `Config.h` | Single source of truth for all pin assignments, motor speeds, servo angles, feedback thresholds, BLE device name, and GATT UUIDs. Change hardware wiring here — nowhere else. |
-| **MotorController** | `MotorController.h/.cpp` | Wraps an `AccelStepper` instance and two limit switch pins. Provides `startUndocking()`, `startDocking()`, and `stop()`. Automatically halts the motor when the appropriate limit switch triggers. Disables the driver when idle to reduce heat. |
-| **DockingSystem** | `DockingSystem.h/.cpp` | The core state machine. Manages the sequential workflow across two motors and one servo. Reads the servo's analog feedback pin to verify position before advancing. Exposes `getStateString()` and `stateChanged()` for BLE notifications. Includes timeout-based error handling. |
+| **Config** | `Config.h` | Single source of truth for all pin assignments, motor speeds, BLE device name, and GATT UUIDs. Change hardware wiring here — nowhere else. |
+| **MotorController** | `MotorController.h/.cpp` | Wraps an `AccelStepper` instance and two limit switch pins. Provides `startUndocking()`, `startDocking()`, and `stop()`. Automatically halts the motor when the appropriate limit switch triggers. Disables the driver when idle to reduce heat. Used for all three motors, including the propeller closer (its "undock" limit is the open limit, its "dock" limit is the close limit). |
+| **DockingSystem** | `DockingSystem.h/.cpp` | The core state machine. Manages the sequential workflow across all three motors. Exposes `getStateString()` and `stateChanged()` for BLE notifications. Includes limit-switch-based error handling. |
 | **SerialCommand** | `SerialCommand.h/.cpp` | Non-blocking serial listener. Reads one line at a time, trims whitespace, converts to uppercase, and dispatches `DOCK`/`UNDOCK` to the `DockingSystem`. |
 | **BLEComm** | `BLEComm.h/.cpp` | BLE GATT server. Creates a service with a writable Command characteristic and a readable/notifiable Status characteristic. Automatically pushes state change notifications to connected clients. Re-advertises on disconnect. |
 | **main** | `main.cpp` | Instantiates all modules, calls `init()` in `setup()`, and calls `update()` in `loop()`. |
@@ -176,19 +164,23 @@ stateDiagram-v2
 
     IDLE --> UNDOCKING_M1 : UNDOCK command
     UNDOCKING_M1 --> UNDOCKING_M2 : M1 undock limit hit
-    UNDOCKING_M2 --> UNDOCKING_SERVO : M2 undock limit hit
-    UNDOCKING_SERVO --> IDLE : Servo settles at 270° (2s timer)
+    UNDOCKING_M2 --> IDLE : M2 undock limit hit
 
     IDLE --> DOCKING_M2 : DOCK command
     DOCKING_M2 --> DOCKING_M1 : M2 dock limit hit
-    DOCKING_M1 --> DOCKING_SERVO : M1 dock limit hit
-    DOCKING_SERVO --> IDLE : Servo settles at 0° (2s timer)
+    DOCKING_M1 --> DOCKING_PROP_OPEN : M1 dock limit hit
+    DOCKING_PROP_OPEN --> DOCKING_PROP_CLOSE : Prop open limit hit
+    DOCKING_PROP_CLOSE --> IDLE : Prop close limit hit
 
     UNDOCKING_M1 --> ERROR : Motor stopped without limit
     UNDOCKING_M2 --> ERROR : Motor stopped without limit
     DOCKING_M2 --> ERROR : Motor stopped without limit
     DOCKING_M1 --> ERROR : Motor stopped without limit
+    DOCKING_PROP_OPEN --> ERROR : Motor stopped without limit
+    DOCKING_PROP_CLOSE --> ERROR : Motor stopped without limit
 ```
+
+The propeller closer (Motor 3) always rests at its close limit and is **not** touched during the undock sequence. It only opens and re-closes as the final two steps of the dock sequence.
 
 ### UNDOCK Sequence (detailed)
 
@@ -196,8 +188,7 @@ stateDiagram-v2
 |------|-------|--------|----------------|
 | 1 | `UNDOCKING_M1` | Motor 1 rotates to **undock** direction | M1 undock limit switch triggers (GPIO 32 → LOW) |
 | 2 | `UNDOCKING_M2` | Motor 2 rotates to **undock** direction | M2 undock limit switch triggers (GPIO 18 → LOW) |
-| 3 | `UNDOCKING_SERVO` | Servo commanded to **270°** | 2-second settle timer |
-| 4 | `IDLE` | Prints `UNDOCKING_COMPLETE` via serial | — |
+| 3 | `IDLE` | Prints `UNDOCKING_COMPLETE` via serial | — |
 
 ### DOCK Sequence (detailed)
 
@@ -205,14 +196,14 @@ stateDiagram-v2
 |------|-------|--------|----------------|
 | 1 | `DOCKING_M2` | Motor 2 rotates to **dock** direction | M2 dock limit switch triggers (GPIO 19 → LOW) |
 | 2 | `DOCKING_M1` | Motor 1 rotates to **dock** direction | M1 dock limit switch triggers (GPIO 33 → LOW) |
-| 3 | `DOCKING_SERVO` | Servo commanded to **0°** | 2-second settle timer |
-| 4 | `IDLE` | Prints `DOCKING_COMPLETE` via serial | — |
+| 3 | `DOCKING_PROP_OPEN` | Motor 3 (propeller closer) rotates to **open** direction | M3 open limit switch triggers (GPIO 21 → LOW) |
+| 4 | `DOCKING_PROP_CLOSE` | Motor 3 rotates back to **close** direction | M3 close limit switch triggers (GPIO 22 → LOW) |
+| 5 | `IDLE` | Prints `DOCKING_COMPLETE` via serial | — |
 
 ### Error Handling
 
-- If a motor stops moving (reaches its `MOTOR_CONTINUOUS_STEPS` target) **without** the limit switch triggering, the system enters `ERROR` state.
-- If the servo does not reach its target feedback range within `SERVO_TIMEOUT_MS` (default: 3000ms), the system enters `ERROR` state.
-- In `ERROR` state, all motors are disabled and the system ignores further commands. A power cycle (reset) is required to recover.
+- If a motor stops moving (reaches its `MOTOR_CONTINUOUS_STEPS` target) **without** the appropriate limit switch triggering, the system enters `ERROR` state.
+- In `ERROR` state, all motors are disabled and the system ignores further commands. A power cycle or `RESET` command is required to recover.
 
 ---
 
@@ -222,6 +213,13 @@ stateDiagram-v2
 |----------|--------|---------------------|
 | `UNDOCK` | Starts the full undocking sequence | `UNDOCKING_COMPLETE` |
 | `DOCK`   | Starts the full docking sequence   | `DOCKING_COMPLETE`   |
+| `RESET`  | Stops all motors immediately and returns to `IDLE` (recovers from `ERROR`) | `[RESET] System recovered. State: IDLE` |
+| `STATUS` | Prints current state and every limit switch reading | `[STATUS] State=... M1_undock=... ...` |
+| `JOG1`   | Bench test: spins Motor 1 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
+| `JOG2`   | Bench test: spins Motor 2 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
+| `JOG3`   | Bench test: spins the propeller closer motor for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
+
+> **Note:** `JOG1`/`JOG2`/`JOG3` only work while `IDLE`, and are meant for verifying a motor spins and is wired correctly. Unlike `DOCK`/`UNDOCK`, jog always runs for the full duration — it deliberately ignores limit switches so you can bench-test a motor before switches are mounted, or observe it run smoothly for the whole window even if a switch trips partway through.
 
 ### Serial Configuration
 
@@ -238,16 +236,16 @@ stateDiagram-v2
 During a sequence, the system prints progress messages:
 
 ```
-Starting UNDOCK sequence...
+Starting UNDOCK sequence: M1 -> M2
 M1 Undocked. Starting M2...
-M2 Undocked. Moving Servo...
 UNDOCKING_COMPLETE
 ```
 
 ```
-Starting DOCK sequence...
-Servo docked. Starting M2 reverse...
-M2 Docked. Starting M1 reverse...
+Starting DOCK sequence: M2 -> M1 -> PROP_OPEN -> PROP_CLOSE
+M2 Docked. Starting M1...
+M1 Docked. Opening propeller closer...
+Propeller closer open. Closing again...
 DOCKING_COMPLETE
 ```
 
@@ -259,11 +257,13 @@ DOCKING_COMPLETE
 | `System busy, cannot undock.` | A sequence is already in progress |
 | `ERROR: M1 stopped but not undocked.` | Motor 1 exhausted steps without hitting limit |
 | `ERROR: M2 stopped but not undocked.` | Motor 2 exhausted steps without hitting limit |
-| `ERROR: Servo timeout during undock.` | Servo feedback didn't confirm 270° within timeout |
-| `ERROR: Servo timeout during dock.` | Servo feedback didn't confirm 0° within timeout |
 | `ERROR: M1 stopped but not docked.` | Motor 1 exhausted steps without hitting limit |
 | `ERROR: M2 stopped but not docked.` | Motor 2 exhausted steps without hitting limit |
-| `Unknown command. Valid commands: DOCK, UNDOCK` | Unrecognised input |
+| `ERROR: Propeller closer stopped but not open.` | Motor 3 exhausted steps without hitting the open limit |
+| `ERROR: Propeller closer stopped but not closed.` | Motor 3 exhausted steps without hitting the close limit |
+| `System busy, cannot jog.` | A sequence or another jog test is already in progress |
+| `Unknown motor. Valid: JOG1, JOG2, JOG3` | Unrecognised jog target |
+| `Unknown command. Valid: DOCK, UNDOCK, RESET, STATUS, JOG1, JOG2, JOG3` | Unrecognised input |
 
 ---
 
@@ -288,13 +288,13 @@ The Status characteristic contains one of these UTF-8 strings:
 | `IDLE` | System is idle, ready for commands |
 | `UNDOCKING_M1` | Motor 1 is undocking |
 | `UNDOCKING_M2` | Motor 2 is undocking |
-| `UNDOCKING_SERVO` | Servo moving to 270° |
 | `UNDOCKING_COMPLETE` | Undock sequence finished successfully |
 | `DOCKING_M2` | Motor 2 is docking |
 | `DOCKING_M1` | Motor 1 is docking |
-| `DOCKING_SERVO` | Servo moving to 0° |
+| `DOCKING_PROP_OPEN` | Propeller closer opening |
+| `DOCKING_PROP_CLOSE` | Propeller closer closing again |
 | `DOCKING_COMPLETE` | Dock sequence finished successfully |
-| `ERROR` | A fault occurred (motor or servo) |
+| `ERROR` | A fault occurred (a motor didn't reach its expected limit switch) |
 
 ### Raspberry Pi Integration (Python `bleak` example)
 
@@ -349,41 +349,27 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 | `M1_DIR_PIN` | 26 | Motor 1 direction output |
 | `M1_ENABLE_PIN` | 27 | Motor 1 driver enable (active LOW) |
 | `M2_STEP_PIN` | 14 | Motor 2 step pulse output |
-| `M2_DIR_PIN` | 12 | Motor 2 direction output |
+| `M2_DIR_PIN` | 23 | Motor 2 direction output (moved off GPIO12 — a flash-voltage strapping pin) |
 | `M2_ENABLE_PIN` | 13 | Motor 2 driver enable (active LOW) |
 | `M1_UNDOCK_LIMIT_PIN` | 32 | Motor 1 undock-side limit switch |
 | `M1_DOCK_LIMIT_PIN` | 33 | Motor 1 dock-side limit switch |
 | `M2_UNDOCK_LIMIT_PIN` | 18 | Motor 2 undock-side limit switch (uses internal pull-up) |
 | `M2_DOCK_LIMIT_PIN` | 19 | Motor 2 dock-side limit switch (uses internal pull-up) |
-| `SERVO_PIN` | 2 | Servo PWM signal output |
-| `SERVO_FEEDBACK_PIN` | 36 | Servo analog feedback input (ADC1, VP) |
+| `M3_STEP_PIN` | 4 | Motor 3 (propeller closer) step pulse output |
+| `M3_DIR_PIN` | 5 | Motor 3 (propeller closer) direction output |
+| `M3_ENABLE_PIN` | 15 | Motor 3 (propeller closer) driver enable (active LOW) |
+| `M3_OPEN_LIMIT_PIN` | 21 | Propeller closer open-side limit switch |
+| `M3_CLOSE_LIMIT_PIN` | 22 | Propeller closer close-side limit switch |
 
 ### Motor Parameters
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `MOTOR_MAX_SPEED` | 1000.0 | Maximum speed in steps/second |
-| `MOTOR_ACCELERATION` | 500.0 | Acceleration in steps/second² |
+| `MOTOR_MAX_SPEED` | 75.0 | Maximum speed in steps/second (shared by all three motors) |
+| `MOTOR_ACCELERATION` | 500.0 | Acceleration in steps/second² (shared by all three motors) |
 | `MOTOR_CONTINUOUS_STEPS` | 1000000 | Virtual target distance (must be large enough to never be reached before a limit switch) |
-
-### Servo Parameters
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `SERVO_DOCK_ANGLE` | 0 | Servo angle when docked |
-| `SERVO_UNDOCK_ANGLE` | 270 | Servo angle when undocked |
-| `SERVO_TIMEOUT_MS` | 3000 | Maximum time (ms) to wait for servo to reach target |
-
-### Servo Feedback Thresholds (ADC 0–4095)
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `SERVO_FB_DOCK_MIN` | 50 | Minimum ADC reading to confirm docked position |
-| `SERVO_FB_DOCK_MAX` | 500 | Maximum ADC reading to confirm docked position |
-| `SERVO_FB_UNDOCK_MIN` | 3400 | Minimum ADC reading to confirm undocked position |
-| `SERVO_FB_UNDOCK_MAX` | 4000 | Maximum ADC reading to confirm undocked position |
-
-> **These threshold values are placeholders.** You must calibrate them for your specific servo. See the [Servo Feedback Calibration](#servo-feedback-calibration) section below.
+| `JOG_DURATION_MS` | 5000 | How long `JOG1`/`JOG2`/`JOG3` spin a motor for |
+| `LIMIT_DEBOUNCE_MS` | 30 | A limit switch reading must hold steady this long before it's trusted — filters brief noise spikes (e.g. from motor start transients) |
 
 ### BLE Parameters
 
@@ -424,47 +410,16 @@ If you encounter `Unable to verify flash chip connection`:
 
 ---
 
-## Servo Feedback Calibration
-
-Your feedback servo has an internal potentiometer that outputs a voltage proportional to its shaft angle. The ESP32 reads this via a 12-bit ADC (values 0–4095).
-
-### Calibration Procedure
-
-1. **Upload a calibration sketch** — or use the existing firmware and temporarily add a print statement in the `DockingSystem::update()` loop:
-
-   ```cpp
-   Serial.println(analogRead(SERVO_FEEDBACK_PIN));
-   ```
-
-2. **Manually command the servo to 0°** and note the ADC reading. For example, if it reads around **220**, set:
-   ```cpp
-   constexpr int SERVO_FB_DOCK_MIN = 150;   // 220 - margin
-   constexpr int SERVO_FB_DOCK_MAX = 300;   // 220 + margin
-   ```
-
-3. **Manually command the servo to 270°** and note the ADC reading. For example, if it reads around **3650**, set:
-   ```cpp
-   constexpr int SERVO_FB_UNDOCK_MIN = 3550;  // 3650 - margin
-   constexpr int SERVO_FB_UNDOCK_MAX = 3750;  // 3650 + margin
-   ```
-
-4. **Re-upload** the firmware with the updated thresholds.
-
-> **Tip:** Add ±50–100 margin around the measured values to account for ADC noise and mechanical play.
-
----
-
 ## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | Serial monitor shows repeated gibberish or truncated messages | Baud rate mismatch | Set your serial monitor to **115200** baud |
-| `System busy, cannot dock/undock` | A sequence is already running | Wait for the current sequence to complete, or power-cycle to reset from ERROR state |
-| `ERROR: Servo timeout` | Servo feedback thresholds not calibrated | Follow the [calibration procedure](#servo-feedback-calibration) |
+| `System busy, cannot dock/undock` | A sequence is already running | Wait for the current sequence to complete, or send `RESET` to recover from ERROR state |
 | Motor doesn't move | ENABLE pin wired incorrectly | Verify ENABLE is LOW to activate the driver. Check stepper driver power (12V) |
 | Motor moves but never stops | Limit switch not wired or not triggering | Check wiring; ensure switch pulls GPIO to GND when pressed |
 | Motor 2 instantly reports undocked/docked | Using GPIO 34/35 which lack internal pull-ups | Pins have been moved to GPIO 18/19 — verify you are wired to the correct GPIOs |
-| ESP32 reboots during servo movement | Brownout from servo current draw | Power the servo from a dedicated 5V supply, not the ESP32 board |
+| Propeller closer doesn't close on boot | Motor was mid-cycle at power loss | This is expected — firmware detects it's off the close limit and auto-closes it during `init()` |
 | Upload fails: `port is busy` | Serial monitor is holding the port open | Close the serial monitor, then retry upload |
 | Upload fails: `chip stopped responding` | Intermittent USB connection | Disconnect and reconnect USB; hold BOOT during flash |
 
