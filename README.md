@@ -205,6 +205,8 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 - If a motor stops moving (reaches its `MOTOR_CONTINUOUS_STEPS` target) **without** the appropriate limit switch triggering, the system enters `ERROR` state.
 - In `ERROR` state, all motors are disabled and the system ignores further commands. A power cycle or `RESET` command is required to recover.
 
+> **Fixed:** `commandUndock()`/`commandDock()` used to publish the new state (`currentState = UNDOCKING_M1` / `DOCKING_M2`) *before* calling `motorX.startUndocking()`/`startDocking()`. Since BLE writes (`CommandCallbacks::onWrite()`) run on the Bluedroid stack's own FreeRTOS task, concurrently with `update()` on the main loop task, there was a race window where `update()` could observe the new state before the motor's `moving` flag had actually flipped `true` — and immediately report `ERROR: M1 stopped but not undocked` without the motor ever moving. Both commands now start the motor *before* publishing the state, closing that window. See `git log -- src/DockingSystem.cpp`.
+
 ---
 
 ## Serial Command API
@@ -213,7 +215,7 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 |----------|--------|---------------------|
 | `UNDOCK` | Starts the full undocking sequence | `UNDOCKING_COMPLETE` |
 | `DOCK`   | Starts the full docking sequence   | `DOCKING_COMPLETE`   |
-| `RESET`  | Stops all motors immediately and returns to `IDLE` (recovers from `ERROR`) | `[RESET] System recovered. State: IDLE` |
+| `RESET`  | Stops all motors immediately and returns to `IDLE` (recovers from `ERROR`) | `[RESET] System recovered. State: IDLE` — and now also notifies `IDLE` over BLE (see below) |
 | `STATUS` | Prints current state and every limit switch reading | `[STATUS] State=... M1_undock=... ...` |
 | `JOG1`   | Bench test: spins Motor 1 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
 | `JOG2`   | Bench test: spins Motor 2 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
@@ -295,6 +297,8 @@ The Status characteristic contains one of these UTF-8 strings:
 | `DOCKING_PROP_CLOSE` | Propeller closer closing again |
 | `DOCKING_COMPLETE` | Dock sequence finished successfully |
 | `ERROR` | A fault occurred (a motor didn't reach its expected limit switch) |
+
+> **Fixed:** `commandReset()` used to set both `currentState` and `lastReportedState` to `IDLE` in the same call. `stateChanged()` (which drives BLE notifications) compares those two fields and only notifies when they differ — setting both left the Status characteristic frozen on whatever value it had before RESET, indefinitely, since nothing would ever look like a "change" again until the next real DOCK/UNDOCK. `commandReset()` now only touches `currentState`, so the next `update()` tick correctly sees the mismatch and notifies `IDLE`. See `git log -- src/DockingSystem.cpp`.
 
 ### Raspberry Pi Integration (Python `bleak` example)
 
