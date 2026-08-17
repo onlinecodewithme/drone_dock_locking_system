@@ -28,8 +28,13 @@ void DockingSystem::commandUndock() {
         return;
     }
     Serial.println("Starting UNDOCK sequence: M1 -> M2");
-    currentState = SystemState::UNDOCKING_M1;
+    // Start the motor BEFORE publishing the new state. onWrite() runs on the
+    // BLE stack's own FreeRTOS task, concurrently with update() on the main
+    // loop task — if currentState went to UNDOCKING_M1 first, update() could
+    // observe it before motor1.moving actually flips true and immediately
+    // report "stopped but not undocked" (ERROR) without M1 ever moving.
     motor1.startUndocking();
+    currentState = SystemState::UNDOCKING_M1;
 }
 
 void DockingSystem::commandDock() {
@@ -38,8 +43,10 @@ void DockingSystem::commandDock() {
         return;
     }
     Serial.println("Starting DOCK sequence: M2 -> M1 -> PROP_OPEN -> PROP_CLOSE");
-    currentState = SystemState::DOCKING_M2;
+    // Same ordering fix as commandUndock() — start the motor before the
+    // state becomes visible to update() on the other task.
     motor2.startDocking();
+    currentState = SystemState::DOCKING_M2;
 }
 
 void DockingSystem::commandJog(int motorNum) {
@@ -81,9 +88,11 @@ void DockingSystem::commandReset() {
     undockingJustCompleted = false;
     dockingJustCompleted = false;
 
-    // Return to IDLE
+    // Return to IDLE. Deliberately leave lastReportedState alone — stateChanged()
+    // compares it against currentState to decide whether to notify BLE clients;
+    // setting both here would make the comparison see no change, so the status
+    // characteristic would keep showing whatever state we reset out of forever.
     currentState = SystemState::IDLE;
-    lastReportedState = SystemState::IDLE;
 
     Serial.println("[RESET] System recovered. State: IDLE");
 }
