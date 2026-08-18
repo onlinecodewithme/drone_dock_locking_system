@@ -20,9 +20,6 @@ void setup() {
     bleComm.init();
     Serial.println("BLE OK.");
 
-    // Consume the initial state-change so BLE doesn't fire a spurious notification
-    dockingSystem.stateChanged();
-    
     Serial.println("System Ready! Waiting for DOCK or UNDOCK (Serial or BLE).");
     Serial.flush(); // Ensure all output is sent before entering loop
 }

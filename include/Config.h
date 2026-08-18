@@ -45,6 +45,36 @@ constexpr unsigned long JOG_DURATION_MS = 5000;
 // Filters brief noise spikes on limit switch lines (e.g. induced by motor start transients).
 constexpr unsigned long LIMIT_DEBOUNCE_MS = 30;
 
+// Max time a single motor stage (e.g. "M1 undock", "propeller close") is allowed
+// to run before it's considered stuck. Previously the only "timeout" was a motor
+// exhausting MOTOR_CONTINUOUS_STEPS, which at MOTOR_MAX_SPEED works out to ~3.7
+// hours — not a real watchdog. This is a real elapsed-time bound per stage.
+// The propeller-closer stage in particular has been observed taking up to ~90s
+// on real hardware — keep this comfortably above that, not the individual
+// motor's typical time.
+constexpr unsigned long STAGE_TIMEOUT_MS = 90000;
+
+// A stage that times out is retried this many times (stop, brief pause, restart
+// the same stage) before the system gives up and reports ERROR. Handles
+// transient issues (a momentary jam, a switch bounce that delayed confirmation)
+// without masking a genuine, persistent fault — retries exhausted still ends in
+// a real ERROR requiring RESET or physical inspection.
+constexpr uint8_t MAX_STAGE_RETRIES = 2;
+
+// Pause between a timed-out stage and its retry attempt. Handled without
+// blocking delay() — see DockingSystem::update()'s retryReadyAtMs.
+constexpr unsigned long STAGE_RETRY_DELAY_MS = 1000;
+
+// How often to re-verify the resting state (UNKNOWN/DOCKED/UNDOCKED/ERROR)
+// against the limit switches while not actively running a stage. A reported
+// state is a snapshot from whenever it was last computed — this catches a
+// switch reading drifting afterward (e.g. a marginal connection) and
+// self-corrects the reported status instead of silently going stale. Also
+// lets ERROR clear itself automatically if the physical evidence genuinely
+// resolves back to a definitive DOCKED/UNDOCKED — never a blind motor retry,
+// only acting on what the switches actually show right now.
+constexpr unsigned long REST_RECHECK_INTERVAL_MS = 2000;
+
 // --- BLE Configuration ---
 #define BLE_DEVICE_NAME        "DockController"
 #define BLE_SERVICE_UUID       "4fafc201-1fb5-459e-8fcc-c5c9c331914b"

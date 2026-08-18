@@ -156,29 +156,36 @@ The system follows a clean **separation of concerns** pattern:
 
 ## State Machine
 
-The system operates as a finite state machine with 8 states:
+The system operates as a finite state machine. `UNKNOWN`/`DOCKED`/`UNDOCKED`/`ERROR` are **stable resting states** — the firmware transitions directly into them and stays there; there's no separate transient "`*_COMPLETE`" pulse that then reverts to a generic idle.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> IDLE
+    [*] --> UNKNOWN
 
-    IDLE --> UNDOCKING_M1 : UNDOCK command
+    UNKNOWN --> UNDOCKING_M1 : UNDOCK command
+    DOCKED --> UNDOCKING_M1 : UNDOCK command
     UNDOCKING_M1 --> UNDOCKING_M2 : M1 undock limit hit
-    UNDOCKING_M2 --> IDLE : M2 undock limit hit
+    UNDOCKING_M2 --> UNDOCKED : M2 undock limit hit
 
-    IDLE --> DOCKING_M2 : DOCK command
+    UNKNOWN --> DOCKING_M2 : DOCK command
+    UNDOCKED --> DOCKING_M2 : DOCK command
     DOCKING_M2 --> DOCKING_M1 : M2 dock limit hit
     DOCKING_M1 --> DOCKING_PROP_OPEN : M1 dock limit hit
     DOCKING_PROP_OPEN --> DOCKING_PROP_CLOSE : Prop open limit hit
-    DOCKING_PROP_CLOSE --> IDLE : Prop close limit hit
+    DOCKING_PROP_CLOSE --> DOCKED : Prop close limit hit
 
-    UNDOCKING_M1 --> ERROR : Motor stopped without limit
-    UNDOCKING_M2 --> ERROR : Motor stopped without limit
-    DOCKING_M2 --> ERROR : Motor stopped without limit
-    DOCKING_M1 --> ERROR : Motor stopped without limit
-    DOCKING_PROP_OPEN --> ERROR : Motor stopped without limit
-    DOCKING_PROP_CLOSE --> ERROR : Motor stopped without limit
+    UNDOCKING_M1 --> ERROR : Stage timed out, retries exhausted
+    UNDOCKING_M2 --> ERROR : Stage timed out, retries exhausted
+    DOCKING_M2 --> ERROR : Stage timed out, retries exhausted
+    DOCKING_M1 --> ERROR : Stage timed out, retries exhausted
+    DOCKING_PROP_OPEN --> ERROR : Stage timed out, retries exhausted
+    DOCKING_PROP_CLOSE --> ERROR : Stage timed out, retries exhausted
+
+    ERROR --> DOCKED : Switches re-verify DOCKED
+    ERROR --> UNDOCKED : Switches re-verify UNDOCKED
 ```
+
+`DOCK`/`UNDOCK` are also accepted from `ERROR` (see `isBusy()`) — a fresh command always starts the relevant motor immediately rather than requiring `RESET` first, since starting the motor is itself the most direct way to find out whether the fault has cleared.
 
 The propeller closer (Motor 3) always rests at its close limit and is **not** touched during the undock sequence. It only opens and re-closes as the final two steps of the dock sequence.
 
@@ -188,7 +195,7 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 |------|-------|--------|----------------|
 | 1 | `UNDOCKING_M1` | Motor 1 rotates to **undock** direction | M1 undock limit switch triggers (GPIO 32 → LOW) |
 | 2 | `UNDOCKING_M2` | Motor 2 rotates to **undock** direction | M2 undock limit switch triggers (GPIO 18 → LOW) |
-| 3 | `IDLE` | Prints `UNDOCKING_COMPLETE` via serial | — |
+| 3 | `UNDOCKED` | Stable resting state — prints `UNDOCKING_COMPLETE -- resting UNDOCKED` via serial | — |
 
 ### DOCK Sequence (detailed)
 
@@ -198,12 +205,14 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 | 2 | `DOCKING_M1` | Motor 1 rotates to **dock** direction | M1 dock limit switch triggers (GPIO 33 → LOW) |
 | 3 | `DOCKING_PROP_OPEN` | Motor 3 (propeller closer) rotates to **open** direction | M3 open limit switch triggers (GPIO 21 → LOW) |
 | 4 | `DOCKING_PROP_CLOSE` | Motor 3 rotates back to **close** direction | M3 close limit switch triggers (GPIO 22 → LOW) |
-| 5 | `IDLE` | Prints `DOCKING_COMPLETE` via serial | — |
+| 5 | `DOCKED` | Stable resting state — prints `DOCKING_COMPLETE -- resting DOCKED` via serial | — |
 
 ### Error Handling
 
-- If a motor stops moving (reaches its `MOTOR_CONTINUOUS_STEPS` target) **without** the appropriate limit switch triggering, the system enters `ERROR` state.
-- In `ERROR` state, all motors are disabled and the system ignores further commands. A power cycle or `RESET` command is required to recover.
+- Each stage (`UNDOCKING_M1`, `DOCKING_PROP_OPEN`, etc.) has its own elapsed-time watchdog: `STAGE_TIMEOUT_MS` (default 90s — the propeller-closer stage has been observed taking up to ~90s on real hardware). This replaced the old approach of waiting for the motor to exhaust `MOTOR_CONTINUOUS_STEPS`, which at `MOTOR_MAX_SPEED` works out to ~3.7 hours — not a real watchdog.
+- A stage that times out is stopped and retried up to `MAX_STAGE_RETRIES` times (default 2), with a `STAGE_RETRY_DELAY_MS` pause (default 1s) before restarting the same stage — handled non-blockingly inside `update()`, not with `delay()`. This absorbs a transient jam or a switch-confirmation delay without masking a genuine fault.
+- Once retries are exhausted, the system enters `ERROR`. All motors are disabled.
+- `ERROR` (like `UNKNOWN`/`DOCKED`/`UNDOCKED`) is passively re-verified against the limit switches every `REST_RECHECK_INTERVAL_MS` (default 2s) — never by retrying a motor, only by reading where the switches say the mechanism actually is right now. If the physical evidence now genuinely and unambiguously supports `DOCKED` or `UNDOCKED`, `ERROR` clears itself automatically. A `RESET` command (or a fresh `DOCK`/`UNDOCK`) still works at any time and doesn't wait for the recheck interval.
 
 > **Fixed:** `commandUndock()`/`commandDock()` used to publish the new state (`currentState = UNDOCKING_M1` / `DOCKING_M2`) *before* calling `motorX.startUndocking()`/`startDocking()`. Since BLE writes (`CommandCallbacks::onWrite()`) run on the Bluedroid stack's own FreeRTOS task, concurrently with `update()` on the main loop task, there was a race window where `update()` could observe the new state before the motor's `moving` flag had actually flipped `true` — and immediately report `ERROR: M1 stopped but not undocked` without the motor ever moving. Both commands now start the motor *before* publishing the state, closing that window. See `git log -- src/DockingSystem.cpp`.
 
@@ -213,15 +222,15 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 
 | Command  | Action | Response on Success |
 |----------|--------|---------------------|
-| `UNDOCK` | Starts the full undocking sequence | `UNDOCKING_COMPLETE` |
-| `DOCK`   | Starts the full docking sequence   | `DOCKING_COMPLETE`   |
-| `RESET`  | Stops all motors immediately and returns to `IDLE` (recovers from `ERROR`) | `[RESET] System recovered. State: IDLE` — and now also notifies `IDLE` over BLE (see below) |
+| `UNDOCK` | Starts the full undocking sequence | `UNDOCKING_COMPLETE -- resting UNDOCKED` |
+| `DOCK`   | Starts the full docking sequence   | `DOCKING_COMPLETE -- resting DOCKED`   |
+| `RESET`  | Stops all motors immediately and re-derives the resting state from the limit switches (recovers from `ERROR`) | `[RESET] System recovered. State: <UNKNOWN\|DOCKED\|UNDOCKED>` — and notifies that state over BLE (see below) |
 | `STATUS` | Prints current state and every limit switch reading | `[STATUS] State=... M1_undock=... ...` |
 | `JOG1`   | Bench test: spins Motor 1 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
 | `JOG2`   | Bench test: spins Motor 2 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
 | `JOG3`   | Bench test: spins the propeller closer motor for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
 
-> **Note:** `JOG1`/`JOG2`/`JOG3` only work while `IDLE`, and are meant for verifying a motor spins and is wired correctly. Unlike `DOCK`/`UNDOCK`, jog always runs for the full duration — it deliberately ignores limit switches so you can bench-test a motor before switches are mounted, or observe it run smoothly for the whole window even if a switch trips partway through.
+> **Note:** `JOG1`/`JOG2`/`JOG3` are rejected while `isBusy()` (any active DOCK/UNDOCK/jog stage) and are meant for verifying a motor spins and is wired correctly. Unlike `DOCK`/`UNDOCK`, jog always runs for the full duration — it deliberately ignores limit switches so you can bench-test a motor before switches are mounted, or observe it run smoothly for the whole window even if a switch trips partway through. Afterward the resting state is re-derived from the switches rather than assumed, since jog can leave the mechanism in an arbitrary position.
 
 ### Serial Configuration
 
@@ -240,7 +249,7 @@ During a sequence, the system prints progress messages:
 ```
 Starting UNDOCK sequence: M1 -> M2
 M1 Undocked. Starting M2...
-UNDOCKING_COMPLETE
+UNDOCKING_COMPLETE -- resting UNDOCKED
 ```
 
 ```
@@ -248,7 +257,14 @@ Starting DOCK sequence: M2 -> M1 -> PROP_OPEN -> PROP_CLOSE
 M2 Docked. Starting M1...
 M1 Docked. Opening propeller closer...
 Propeller closer open. Closing again...
-DOCKING_COMPLETE
+DOCKING_COMPLETE -- resting DOCKED
+```
+
+A stage that times out and retries prints, then either recovers into the next stage or gives up into `ERROR`:
+
+```
+WARNING: M1 undock timed out — will retry (attempt 1/2)
+Retrying stage: M1 undock
 ```
 
 ### Error Messages
@@ -257,12 +273,8 @@ DOCKING_COMPLETE
 |---------|---------|
 | `System busy, cannot dock.` | A sequence is already in progress |
 | `System busy, cannot undock.` | A sequence is already in progress |
-| `ERROR: M1 stopped but not undocked.` | Motor 1 exhausted steps without hitting limit |
-| `ERROR: M2 stopped but not undocked.` | Motor 2 exhausted steps without hitting limit |
-| `ERROR: M1 stopped but not docked.` | Motor 1 exhausted steps without hitting limit |
-| `ERROR: M2 stopped but not docked.` | Motor 2 exhausted steps without hitting limit |
-| `ERROR: Propeller closer stopped but not open.` | Motor 3 exhausted steps without hitting the open limit |
-| `ERROR: Propeller closer stopped but not closed.` | Motor 3 exhausted steps without hitting the close limit |
+| `WARNING: <stage> timed out — will retry (attempt N/2)` | A stage exceeded `STAGE_TIMEOUT_MS` without its limit switch triggering; motor stopped, will restart after `STAGE_RETRY_DELAY_MS` |
+| `ERROR: <stage> timed out after N attempt(s) — giving up` | The stage timed out more than `MAX_STAGE_RETRIES` times; system enters `ERROR` |
 | `System busy, cannot jog.` | A sequence or another jog test is already in progress |
 | `Unknown motor. Valid: JOG1, JOG2, JOG3` | Unrecognised jog target |
 | `Unknown command. Valid: DOCK, UNDOCK, RESET, STATUS, JOG1, JOG2, JOG3` | Unrecognised input |
@@ -287,18 +299,20 @@ The Status characteristic contains one of these UTF-8 strings:
 
 | Value | Meaning |
 |-------|---------|
-| `IDLE` | System is idle, ready for commands |
+| `UNKNOWN` | Position not verified against the limit switches (e.g. very first boot before switches settle) |
+| `DOCKED` | Stable resting state — drone secured |
+| `UNDOCKED` | Stable resting state — drone released, safe to fly |
 | `UNDOCKING_M1` | Motor 1 is undocking |
 | `UNDOCKING_M2` | Motor 2 is undocking |
-| `UNDOCKING_COMPLETE` | Undock sequence finished successfully |
 | `DOCKING_M2` | Motor 2 is docking |
 | `DOCKING_M1` | Motor 1 is docking |
 | `DOCKING_PROP_OPEN` | Propeller closer opening |
 | `DOCKING_PROP_CLOSE` | Propeller closer closing again |
-| `DOCKING_COMPLETE` | Dock sequence finished successfully |
-| `ERROR` | A fault occurred (a motor didn't reach its expected limit switch) |
+| `ERROR` | A stage exhausted its retries without its limit switch triggering |
 
-> **Fixed:** `commandReset()` used to set both `currentState` and `lastReportedState` to `IDLE` in the same call. `stateChanged()` (which drives BLE notifications) compares those two fields and only notifies when they differ — setting both left the Status characteristic frozen on whatever value it had before RESET, indefinitely, since nothing would ever look like a "change" again until the next real DOCK/UNDOCK. `commandReset()` now only touches `currentState`, so the next `update()` tick correctly sees the mismatch and notifies `IDLE`. See `git log -- src/DockingSystem.cpp`.
+`DOCKED`/`UNDOCKED` are the two stable resting states — the firmware transitions directly into them and stays there. There's no separate transient "`*_COMPLETE`" status that then reverts to something generic; a BLE client should treat receiving `DOCKED`/`UNDOCKED` itself as the completion signal.
+
+> **Fixed:** `commandReset()` used to set both `currentState` and `lastReportedState` to the same value in the same call. `stateChanged()` (which drives BLE notifications) compares those two fields and only notifies when they differ — setting both left the Status characteristic frozen on whatever value it had before RESET, indefinitely, since nothing would ever look like a "change" again until the next real DOCK/UNDOCK. `commandReset()` now only touches `currentState`, so the next `update()` tick correctly sees the mismatch and notifies the re-derived state. See `git log -- src/DockingSystem.cpp`.
 
 ### Raspberry Pi Integration (Python `bleak` example)
 
@@ -315,9 +329,9 @@ STATUS_UUID = "8c1c10ea-4536-4a5b-9c37-2f7a3e5c1d2b"
 def on_status(sender, data):
     status = data.decode()
     print(f"Status update: {status}")
-    if status == "UNDOCKING_COMPLETE":
+    if status == "UNDOCKED":
         print("Undocking done! Safe to proceed.")
-    elif status == "DOCKING_COMPLETE":
+    elif status == "DOCKED":
         print("Docking done!")
     elif status == "ERROR":
         print("ERROR detected — check hardware.")
@@ -375,6 +389,15 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 | `JOG_DURATION_MS` | 5000 | How long `JOG1`/`JOG2`/`JOG3` spin a motor for |
 | `LIMIT_DEBOUNCE_MS` | 30 | A limit switch reading must hold steady this long before it's trusted — filters brief noise spikes (e.g. from motor start transients) |
 
+### Stage Watchdog Parameters
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `STAGE_TIMEOUT_MS` | 90000 (90s) | Max time a single stage (e.g. `UNDOCKING_M1`, `DOCKING_PROP_CLOSE`) may run before it's considered stuck. The propeller-closer stage has been observed taking up to ~90s on real hardware — keep this comfortably above that. |
+| `MAX_STAGE_RETRIES` | 2 | How many times a timed-out stage is stopped and restarted before the system gives up into `ERROR` |
+| `STAGE_RETRY_DELAY_MS` | 1000 | Non-blocking pause between a timed-out stage and its retry attempt |
+| `REST_RECHECK_INTERVAL_MS` | 2000 | How often `UNKNOWN`/`DOCKED`/`UNDOCKED`/`ERROR` are passively re-verified against the limit switches — lets a drifted reading self-correct, and lets `ERROR` clear itself if the switches now genuinely agree on `DOCKED`/`UNDOCKED` |
+
 ### BLE Parameters
 
 | Constant | Default | Description |
@@ -419,7 +442,8 @@ If you encounter `Unable to verify flash chip connection`:
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | Serial monitor shows repeated gibberish or truncated messages | Baud rate mismatch | Set your serial monitor to **115200** baud |
-| `System busy, cannot dock/undock` | A sequence is already running | Wait for the current sequence to complete, or send `RESET` to recover from ERROR state |
+| `System busy, cannot dock/undock` | A sequence is already running | Wait for the current sequence to complete. `DOCK`/`UNDOCK` are accepted from `ERROR` too — you don't need to `RESET` first, a fresh command will re-attempt the stage directly |
+| Stuck in `ERROR` after a stage exhausted its retries | A motor genuinely isn't reaching its limit switch (mechanical jam, wiring fault, or a switch that never triggers) | Physically inspect the mechanism/wiring for that motor. `ERROR` self-clears every `REST_RECHECK_INTERVAL_MS` if the switches come to genuinely, unambiguously agree on `DOCKED`/`UNDOCKED` on their own — otherwise send `RESET` (or a fresh `DOCK`/`UNDOCK`) once fixed |
 | Motor doesn't move | ENABLE pin wired incorrectly | Verify ENABLE is LOW to activate the driver. Check stepper driver power (12V) |
 | Motor moves but never stops | Limit switch not wired or not triggering | Check wiring; ensure switch pulls GPIO to GND when pressed |
 | Motor 2 instantly reports undocked/docked | Using GPIO 34/35 which lack internal pull-ups | Pins have been moved to GPIO 18/19 — verify you are wired to the correct GPIOs |
