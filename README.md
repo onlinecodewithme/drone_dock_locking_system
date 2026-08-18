@@ -74,6 +74,8 @@ This system controls a three-stage mechanical docking mechanism. The workflow is
 
 > **⚠️ Note:** GPIO 34, 35, 36, 39 are **input-only** on the ESP32 and do **not** have internal pull-up resistors. We intentionally avoid using them for limit switches.
 
+> **Connector-to-role mapping:** the table above describes the fixed GPIO wiring of each physical connector (M1/M2/M3). Which *logical* motor role (`motor1`/`motor2`/`motorProp` in `DockingSystem.cpp` — the drone-lock arms and the propeller closer) plugs into which connector's STEP/DIR/ENABLE pins is a separate, changeable decision for cable-routing convenience — currently `motor1` → **M3's STEP/DIR/ENABLE**, `motor2` → **M1's**, `motorProp` → **M2's**. Each mechanism's own 2 limit switches were **not** relocated and stay wired to their original connector's limit pins (`motor1` still reads `M1_UNDOCK_LIMIT_PIN`/`M1_DOCK_LIMIT_PIN`, `motor2` still reads `M2_*`, `motorProp` still reads `M3_OPEN_LIMIT_PIN`/`M3_CLOSE_LIMIT_PIN`) — only the motor control wiring moved, not the switch wiring. See the constructor in `DockingSystem.cpp` for the authoritative mapping — it's deliberately kept in one place rather than duplicated here.
+
 ### Limit Switch Wiring
 
 All six limit switches use the ESP32's internal pull-up resistors (`INPUT_PULLUP`). No external resistors are needed.

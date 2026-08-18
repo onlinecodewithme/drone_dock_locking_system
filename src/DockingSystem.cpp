@@ -1,10 +1,19 @@
 #include "DockingSystem.h"
 #include "Config.h"
 
+// Only each motor's STEP/DIR/ENABLE wiring was physically rotated for
+// cable routing convenience — motor1's stepper now runs off the M3
+// connector, motor2's off the M1 connector, motorProp's off the M2
+// connector. Each mechanism's own 2 limit switches were NOT moved and
+// are still wired to their original connector's limit pins, so those
+// stay put here even though the STEP/DIR/ENABLE pins moved. The logical
+// roles and sequencing below are otherwise unchanged. invertDirection
+// stays attached to the logical role (it reflects that specific motor's
+// own coil wiring, which moved with it), not the connector.
 DockingSystem::DockingSystem()
-    : motor1(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true),
-      motor2(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false),
-      motorProp(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN, true),
+    : motor1(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true),
+      motor2(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false),
+      motorProp(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN, true),
       currentState(SystemState::UNKNOWN), lastReportedState(SystemState::UNKNOWN),
       stageStartMs(0), stageRetries(0), awaitingRetry(false), retryReadyAtMs(0),
       testMotor(nullptr), testStartTime(0), lastRestCheckMs(0) {}
