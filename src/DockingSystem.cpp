@@ -4,7 +4,7 @@
 DockingSystem::DockingSystem()
     : motor1(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true),
       motor2(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false),
-      motorProp(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN),
+      motorProp(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN, true),
       currentState(SystemState::UNKNOWN), lastReportedState(SystemState::UNKNOWN),
       stageStartMs(0), stageRetries(0), awaitingRetry(false), retryReadyAtMs(0),
       testMotor(nullptr), testStartTime(0), lastRestCheckMs(0) {}
