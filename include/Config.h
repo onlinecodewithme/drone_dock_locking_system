@@ -76,7 +76,7 @@ constexpr unsigned long STAGE_RETRY_DELAY_MS = 1000;
 constexpr unsigned long REST_RECHECK_INTERVAL_MS = 2000;
 
 // --- BLE Configuration ---
-#define BLE_DEVICE_NAME        "DockController"
+#define BLE_DEVICE_NAME        "ESP_UGV"
 #define BLE_SERVICE_UUID       "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define BLE_CMD_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define BLE_STATUS_CHAR_UUID   "8c1c10ea-4536-4a5b-9c37-2f7a3e5c1d2b"

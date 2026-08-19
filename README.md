@@ -29,7 +29,7 @@ This system controls a three-stage mechanical docking mechanism. The workflow is
 
 - **Non-blocking state machine** — no `delay()` calls in the main loop; serial remains responsive at all times.
 - **Dual command interface** — accepts commands via both USB Serial and Bluetooth Low Energy (BLE).
-- **BLE GATT server** — advertises as `DockController`; a Raspberry Pi (or any BLE central) can write commands and subscribe to real-time status notifications.
+- **BLE GATT server** — advertises as `ESP_UGV`; a Raspberry Pi (or any BLE central) can write commands and subscribe to real-time status notifications.
 - **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps, used for all three motors.
 - **Hardware limit switches** on every endpoint (6 total) for safe, deterministic travel — no encoders or position feedback required.
 - **Propeller closer safety default** — the third motor always rests at its close limit; it only opens (to clear the propeller) and closes again as the final step of the dock sequence.
@@ -285,7 +285,7 @@ Retrying stage: M1 undock
 
 ## BLE Communication
 
-The ESP32 runs a BLE GATT server that advertises as **`DockController`**. Any BLE central (Raspberry Pi, phone, etc.) can connect, send commands, and receive real-time status notifications.
+The ESP32 runs a BLE GATT server that advertises as **`ESP_UGV`**. Any BLE central (Raspberry Pi, phone, etc.) can connect, send commands, and receive real-time status notifications.
 
 ### GATT Service & Characteristics
 
@@ -404,7 +404,7 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `BLE_DEVICE_NAME` | `"DockController"` | The name advertised over BLE |
+| `BLE_DEVICE_NAME` | `"ESP_UGV"` | The name advertised over BLE |
 | `BLE_SERVICE_UUID` | `4fafc201-...` | GATT service UUID |
 | `BLE_CMD_CHAR_UUID` | `beb5483e-...` | Command characteristic UUID |
 | `BLE_STATUS_CHAR_UUID` | `8c1c10ea-...` | Status characteristic UUID |
