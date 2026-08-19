@@ -387,8 +387,8 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 |----------|---------|-------------|
 | `MOTOR_MAX_SPEED` | 75.0 | Maximum speed in steps/second — used by M1 and M2 |
 | `MOTOR_ACCELERATION` | 500.0 | Acceleration in steps/second² — used by M1 and M2 |
-| `PROP_MOTOR_MAX_SPEED` | 150.0 | Maximum speed in steps/second — used by the propeller closer (M3) only, faster than M1/M2 |
-| `PROP_MOTOR_ACCELERATION` | 1000.0 | Acceleration in steps/second² — used by the propeller closer (M3) only |
+| `PROP_MOTOR_MAX_SPEED` | 450.0 | Maximum speed in steps/second — used by the propeller closer (M3) only, faster than M1/M2 |
+| `PROP_MOTOR_ACCELERATION` | 3000.0 | Acceleration in steps/second² — used by the propeller closer (M3) only |
 | `MOTOR_CONTINUOUS_STEPS` | 1000000 | Virtual target distance (must be large enough to never be reached before a limit switch) |
 | `JOG_DURATION_MS` | 5000 | How long `JOG1`/`JOG2`/`JOG3` spin a motor for |
 | `LIMIT_DEBOUNCE_MS` | 30 | A limit switch reading must hold steady this long before it's trusted — filters brief noise spikes (e.g. from motor start transients) |
