@@ -4,7 +4,8 @@
 class MotorController {
 public:
     MotorController(uint8_t stepPin, uint8_t dirPin, uint8_t enablePin,
-                    uint8_t undockLimitPin, uint8_t dockLimitPin, bool invertDirection = false);
+                    uint8_t undockLimitPin, uint8_t dockLimitPin, bool invertDirection,
+                    float maxSpeed, float acceleration);
     
     void init();
     void update(); // call in loop
@@ -23,6 +24,8 @@ private:
     uint8_t enablePin;
     uint8_t undockLimitPin;
     uint8_t dockLimitPin;
+    float maxSpeed;
+    float acceleration;
     bool moving;
     bool movingToUndock;
     bool movingToDock;

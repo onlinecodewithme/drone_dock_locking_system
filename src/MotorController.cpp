@@ -2,11 +2,14 @@
 #include "Config.h"
 
 MotorController::MotorController(uint8_t stepPin, uint8_t dirPin, uint8_t enablePin,
-                                 uint8_t undockLimitPin, uint8_t dockLimitPin, bool invertDirection)
+                                 uint8_t undockLimitPin, uint8_t dockLimitPin, bool invertDirection,
+                                 float maxSpeed, float acceleration)
     : stepper(AccelStepper::DRIVER, stepPin, dirPin),
       enablePin(enablePin),
       undockLimitPin(undockLimitPin),
       dockLimitPin(dockLimitPin),
+      maxSpeed(maxSpeed),
+      acceleration(acceleration),
       moving(false), movingToUndock(false), movingToDock(false), jogging(false),
       undockDebounced(false), undockPendingSince(0), dockDebounced(false), dockPendingSince(0) {
     stepper.setPinsInverted(invertDirection, false, false);
@@ -19,8 +22,8 @@ void MotorController::init() {
     pinMode(undockLimitPin, INPUT_PULLUP);
     pinMode(dockLimitPin, INPUT_PULLUP);
 
-    stepper.setMaxSpeed(MOTOR_MAX_SPEED);
-    stepper.setAcceleration(MOTOR_ACCELERATION);
+    stepper.setMaxSpeed(maxSpeed);
+    stepper.setAcceleration(acceleration);
 
     // Seed debounced state from the real pin reading so init doesn't report a false transition
     undockDebounced = digitalRead(undockLimitPin) == LOW;

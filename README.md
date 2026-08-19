@@ -30,9 +30,9 @@ This system controls a three-stage mechanical docking mechanism. The workflow is
 - **Non-blocking state machine** — no `delay()` calls in the main loop; serial remains responsive at all times.
 - **Dual command interface** — accepts commands via both USB Serial and Bluetooth Low Energy (BLE).
 - **BLE GATT server** — advertises as `ESP_UGV`; a Raspberry Pi (or any BLE central) can write commands and subscribe to real-time status notifications.
-- **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps, used for all three motors.
+- **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps, tuned per motor — the propeller closer (M3) runs faster than M1/M2 (see `PROP_MOTOR_MAX_SPEED`/`PROP_MOTOR_ACCELERATION` in `Config.h`).
 - **Hardware limit switches** on every endpoint (6 total) for safe, deterministic travel — no encoders or position feedback required.
-- **Propeller closer safety default** — the third motor always rests at its close limit; it only opens (to clear the propeller) and closes again as the final step of the dock sequence.
+- **Propeller closer rests closed during normal operation** — it only opens (to clear the propeller) and closes again as part of the dock sequence. It is never homed automatically at boot: forcing it to move without knowing why it isn't at its close limit would be mechanically unsafe if it's genuinely constrained (e.g. something resting against it), not just unhomed — boot only reads its actual position from the limit switches, same as M1/M2.
 - **Modular C++ architecture** — each concern (motors, serial parsing, BLE, sequencing) is encapsulated in its own class.
 
 ---
@@ -385,8 +385,10 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 
 | Constant | Default | Description |
 |----------|---------|-------------|
-| `MOTOR_MAX_SPEED` | 75.0 | Maximum speed in steps/second (shared by all three motors) |
-| `MOTOR_ACCELERATION` | 500.0 | Acceleration in steps/second² (shared by all three motors) |
+| `MOTOR_MAX_SPEED` | 75.0 | Maximum speed in steps/second — used by M1 and M2 |
+| `MOTOR_ACCELERATION` | 500.0 | Acceleration in steps/second² — used by M1 and M2 |
+| `PROP_MOTOR_MAX_SPEED` | 150.0 | Maximum speed in steps/second — used by the propeller closer (M3) only, faster than M1/M2 |
+| `PROP_MOTOR_ACCELERATION` | 1000.0 | Acceleration in steps/second² — used by the propeller closer (M3) only |
 | `MOTOR_CONTINUOUS_STEPS` | 1000000 | Virtual target distance (must be large enough to never be reached before a limit switch) |
 | `JOG_DURATION_MS` | 5000 | How long `JOG1`/`JOG2`/`JOG3` spin a motor for |
 | `LIMIT_DEBOUNCE_MS` | 30 | A limit switch reading must hold steady this long before it's trusted — filters brief noise spikes (e.g. from motor start transients) |
@@ -449,7 +451,7 @@ If you encounter `Unable to verify flash chip connection`:
 | Motor doesn't move | ENABLE pin wired incorrectly | Verify ENABLE is LOW to activate the driver. Check stepper driver power (12V) |
 | Motor moves but never stops | Limit switch not wired or not triggering | Check wiring; ensure switch pulls GPIO to GND when pressed |
 | Motor 2 instantly reports undocked/docked | Using GPIO 34/35 which lack internal pull-ups | Pins have been moved to GPIO 18/19 — verify you are wired to the correct GPIOs |
-| Propeller closer doesn't close on boot | Motor was mid-cycle at power loss | This is expected — firmware detects it's off the close limit and auto-closes it during `init()` |
+| Resting state reads `UNKNOWN` after boot even though the mechanism looks fine | Boot only reads limit switches, it never homes any motor (including the propeller closer) | Expected if nothing's actually at a confirmed limit yet — send `DOCK`/`UNDOCK` (or `RESET` after physically verifying) to establish a known position. Boot deliberately never moves a motor on its own — see Key Features. |
 | Upload fails: `port is busy` | Serial monitor is holding the port open | Close the serial monitor, then retry upload |
 | Upload fails: `chip stopped responding` | Intermittent USB connection | Disconnect and reconnect USB; hold BOOT during flash |
 

@@ -35,6 +35,13 @@ constexpr uint8_t M3_CLOSE_LIMIT_PIN = 22;
 constexpr float MOTOR_MAX_SPEED = 75.0f; // steps per second
 constexpr float MOTOR_ACCELERATION = 500.0f;
 
+// Propeller closer (M3) runs faster than M1/M2 — it's a lighter mechanism
+// with less to bind on, and the DOCKING_PROP_OPEN/PROP_CLOSE stages were
+// the main contributor to a full DOCK cycle's ~60-90s duration. Tune here
+// if it still feels slow, or dial back if it starts skipping steps/stalling.
+constexpr float PROP_MOTOR_MAX_SPEED = 150.0f; // 2x M1/M2's speed
+constexpr float PROP_MOTOR_ACCELERATION = 1000.0f; // 2x M1/M2's acceleration
+
 // For continuous rotation during docking/undocking, we can just set a very large target position
 constexpr long MOTOR_CONTINUOUS_STEPS = 1000000;
 

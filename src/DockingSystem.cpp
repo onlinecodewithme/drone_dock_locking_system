@@ -11,9 +11,12 @@
 // stays attached to the logical role (it reflects that specific motor's
 // own coil wiring, which moved with it), not the connector.
 DockingSystem::DockingSystem()
-    : motor1(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true),
-      motor2(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false),
-      motorProp(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN, true),
+    : motor1(M3_STEP_PIN, M3_DIR_PIN, M3_ENABLE_PIN, M1_UNDOCK_LIMIT_PIN, M1_DOCK_LIMIT_PIN, true,
+             MOTOR_MAX_SPEED, MOTOR_ACCELERATION),
+      motor2(M1_STEP_PIN, M1_DIR_PIN, M1_ENABLE_PIN, M2_UNDOCK_LIMIT_PIN, M2_DOCK_LIMIT_PIN, false,
+             MOTOR_MAX_SPEED, MOTOR_ACCELERATION),
+      motorProp(M2_STEP_PIN, M2_DIR_PIN, M2_ENABLE_PIN, M3_OPEN_LIMIT_PIN, M3_CLOSE_LIMIT_PIN, true,
+                PROP_MOTOR_MAX_SPEED, PROP_MOTOR_ACCELERATION),
       currentState(SystemState::UNKNOWN), lastReportedState(SystemState::UNKNOWN),
       stageStartMs(0), stageRetries(0), awaitingRetry(false), retryReadyAtMs(0),
       testMotor(nullptr), testStartTime(0), lastRestCheckMs(0) {}
@@ -23,32 +26,15 @@ void DockingSystem::init() {
     motor2.init();
     motorProp.init();
 
-    // Propeller closer must always rest closed — enforce it at boot in case
-    // power was lost mid-cycle. Blocks here, but reuses the same
-    // timeout+bounded-retry logic as every other stage (runStage()) rather
-    // than a one-off wait — nothing else is running yet at this point in
-    // setup(), so blocking is fine.
-    bool propOk = true;
-    if (!motorProp.isDocked()) {
-        Serial.println("[PROP] Not at close limit on boot — closing...");
-        motorProp.startDocking();
-        beginStage();
-        bool closed = false;
-        while (!closed && currentState != SystemState::ERROR) {
-            motorProp.update();
-            closed = runStage(motorProp, motorProp.isDocked(), "boot propeller close",
-                               [this]() { motorProp.startDocking(); });
-            delay(2);
-        }
-        propOk = closed;
-    }
-
-    if (propOk) {
-        // Only re-derive from switches if the propeller genuinely settled —
-        // if runStage() gave up above, currentState is already ERROR and
-        // that's a real fault worth preserving, not papering over.
-        currentState = inferRestingState();
-    }
+    // Never home any motor at boot — including the propeller closer, which
+    // previously auto-closed here if it wasn't already at its close limit.
+    // That's mechanically risky: at boot the propeller closer can be under
+    // a genuine physical constraint (e.g. locked by whatever's resting
+    // against it), not merely "unhomed", and forcing it to move without
+    // knowing that is unsafe. Just read the real resting state from the
+    // limit switches, same as motor1/motor2 always have — never assume,
+    // never move on its own.
+    currentState = inferRestingState();
     lastReportedState = currentState; // nothing is subscribed yet — nothing to notify
     Serial.print("[BOOT] Resting state verified as: ");
     Serial.println(getStateString());
