@@ -46,10 +46,11 @@ void DockingSystem::commandUndock() {
         return;
     }
     Serial.println("Starting UNDOCK sequence: M1 -> M2");
-    // Start the motor BEFORE publishing the new state. onWrite() runs on the
-    // BLE stack's own FreeRTOS task, concurrently with update() on the main
-    // loop task — if currentState went to UNDOCKING_M1 first, update() could
-    // observe it before motor1.moving actually flips true.
+    // Start the motor BEFORE publishing the new state, so nothing that
+    // observes UNDOCKING_M1 can see it before motor1 is actually moving.
+    // (This mattered when BLE writes arrived on their own FreeRTOS task;
+    // commands now only arrive over serial on the main loop, but the
+    // ordering is kept as the safe default.)
     motor1.startUndocking();
     enterStage(SystemState::UNDOCKING_M1);
 }
@@ -101,9 +102,9 @@ void DockingSystem::commandReset() {
 
     // Re-derive the real resting state from the limit switches — never
     // assume. Deliberately does NOT touch lastReportedState — stateChanged()
-    // compares it against currentState to decide whether to notify BLE
-    // clients; setting both here would make the comparison see no change,
-    // leaving the status characteristic frozen on its pre-RESET value.
+    // compares it against currentState to decide whether to emit a STATE:
+    // line; setting both here would make the comparison see no change and
+    // the Pi would never hear the post-RESET state.
     currentState = inferRestingState();
 
     Serial.print("[RESET] System recovered. State: ");

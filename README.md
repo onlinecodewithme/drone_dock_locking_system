@@ -1,6 +1,6 @@
 # ESP32 Docking Controller
 
-> Production-grade firmware for an automated docking/undocking mechanism using three NEMA-17 stepper motors and six limit switches — orchestrated by a non-blocking state machine on an ESP32-WROOM-32U. Supports both **Serial** and **BLE** command interfaces for integration with Raspberry Pi or any BLE central.
+> Production-grade firmware for an automated docking/undocking mechanism using three NEMA-17 stepper motors and six limit switches — orchestrated by a non-blocking state machine on an ESP32-WROOM-32U. Controlled by a Raspberry Pi over **USB serial**. (The BLE interface was removed in November 2026.)
 
 ---
 
@@ -13,7 +13,7 @@
 5. [Architecture](#architecture)
 6. [State Machine](#state-machine)
 7. [Serial Command API](#serial-command-api)
-8. [BLE Communication](#ble-communication)
+8. [Raspberry Pi Protocol (USB serial)](#raspberry-pi-protocol-usb-serial)
 9. [Configuration Reference](#configuration-reference)
 10. [Building & Flashing](#building--flashing)
 11. [Troubleshooting](#troubleshooting)
@@ -28,12 +28,11 @@ This system controls a three-stage mechanical docking mechanism. The workflow is
 ### Key Features
 
 - **Non-blocking state machine** — no `delay()` calls in the main loop; serial remains responsive at all times.
-- **Dual command interface** — accepts commands via both USB Serial and Bluetooth Low Energy (BLE).
-- **BLE GATT server** — advertises as `ESP_UGV`; a Raspberry Pi (or any BLE central) can write commands and subscribe to real-time status notifications.
+- **USB serial interface** — the Raspberry Pi sends `DOCK`/`UNDOCK`/`RESET`/`STATUS` lines and receives a machine-readable `STATE:<state>` line on every state change. No radio: BLE was removed, so nothing nearby can command the dock.
 - **Accelerated stepper control** via the AccelStepper library with configurable speed and acceleration ramps, tuned per motor — the propeller closer (M3) runs faster than M1/M2 (see `PROP_MOTOR_MAX_SPEED`/`PROP_MOTOR_ACCELERATION` in `Config.h`).
 - **Hardware limit switches** on every endpoint (6 total) for safe, deterministic travel — no encoders or position feedback required.
 - **Propeller closer rests closed during normal operation** — it only opens (to clear the propeller) and closes again as part of the dock sequence. It is never homed automatically at boot: forcing it to move without knowing why it isn't at its close limit would be mechanically unsafe if it's genuinely constrained (e.g. something resting against it), not just unhomed — boot only reads its actual position from the limit switches, same as M1/M2.
-- **Modular C++ architecture** — each concern (motors, serial parsing, BLE, sequencing) is encapsulated in its own class.
+- **Modular C++ architecture** — each concern (motors, serial parsing, sequencing) is encapsulated in its own class.
 
 ---
 
@@ -98,14 +97,12 @@ All six limit switches use the ESP32's internal pull-up resistors (`INPUT_PULLUP
 ```
 esp32_test/
 ├── include/
-│   ├── Config.h              # All pin definitions, speeds, thresholds, and BLE UUIDs
-│   ├── BLEComm.h             # BLE GATT server module
+│   ├── Config.h              # All pin definitions, speeds, and thresholds
 │   ├── DockingSystem.h       # State machine class declaration
 │   ├── MotorController.h     # Stepper motor abstraction
 │   └── SerialCommand.h       # Serial command parser
 ├── src/
-│   ├── main.cpp              # Entry point — wires everything together
-│   ├── BLEComm.cpp           # BLE server, characteristics, and callbacks
+│   ├── main.cpp              # Entry point — wires everything together, emits STATE: lines
 │   ├── DockingSystem.cpp     # State machine implementation
 │   ├── MotorController.cpp   # Motor + limit switch logic
 │   └── SerialCommand.cpp     # Command parsing logic
@@ -122,17 +119,18 @@ The system follows a clean **separation of concerns** pattern:
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                          main.cpp                                │
-│  setup() → init all modules                                      │
-│  loop()  → serial.update() + docking.update() + ble.update()     │
-└──────┬──────────────────┬──────────────────────┬─────────────────┘
-       │                  │                      │
-┌──────▼──────┐  ┌────────▼────────────┐  ┌──────▼──────────┐
-│SerialCommand│  │   DockingSystem      │  │    BLEComm      │
-│             │  │   (State Machine)    │  │                 │
-│Parses serial│──│                      │──│ GATT server     │
-│commands     │  │ Orchestrates the     │  │ Writes commands  │
-│             │  │ multi-step sequence  │  │ Notifies status  │
-└─────────────┘  └───────────┬───────────┘  └─────────────────┘
+│  setup() → init, print STATE:<resting state>                     │
+│  loop()  → serial.update() + docking.update()                    │
+│            + print STATE:<state> whenever the state changes      │
+└──────┬──────────────────┬────────────────────────────────────────┘
+       │                  │
+┌──────▼──────┐  ┌────────▼────────────┐
+│SerialCommand│  │   DockingSystem      │
+│             │  │   (State Machine)    │
+│Parses serial│──│                      │
+│commands     │  │ Orchestrates the     │
+│             │  │ multi-step sequence  │
+└─────────────┘  └───────────┬───────────┘
                               │
                    ┌──────────▼──────────┐
                    │   MotorController    │
@@ -147,12 +145,11 @@ The system follows a clean **separation of concerns** pattern:
 
 | Module | File(s) | Responsibility |
 |--------|---------|----------------|
-| **Config** | `Config.h` | Single source of truth for all pin assignments, motor speeds, BLE device name, and GATT UUIDs. Change hardware wiring here — nowhere else. |
+| **Config** | `Config.h` | Single source of truth for all pin assignments, motor speeds, and timing thresholds. Change hardware wiring here — nowhere else. |
 | **MotorController** | `MotorController.h/.cpp` | Wraps an `AccelStepper` instance and two limit switch pins. Provides `startUndocking()`, `startDocking()`, and `stop()`. Automatically halts the motor when the appropriate limit switch triggers. Disables the driver when idle to reduce heat. Used for all three motors, including the propeller closer (its "undock" limit is the open limit, its "dock" limit is the close limit). |
-| **DockingSystem** | `DockingSystem.h/.cpp` | The core state machine. Manages the sequential workflow across all three motors. Exposes `getStateString()` and `stateChanged()` for BLE notifications. Includes limit-switch-based error handling. |
+| **DockingSystem** | `DockingSystem.h/.cpp` | The core state machine. Manages the sequential workflow across all three motors. Exposes `getStateString()` and `stateChanged()`, which `main.cpp` uses to emit `STATE:` lines. Includes limit-switch-based error handling. |
 | **SerialCommand** | `SerialCommand.h/.cpp` | Non-blocking serial listener. Reads one line at a time, trims whitespace, converts to uppercase, and dispatches `DOCK`/`UNDOCK` to the `DockingSystem`. |
-| **BLEComm** | `BLEComm.h/.cpp` | BLE GATT server. Creates a service with a writable Command characteristic and a readable/notifiable Status characteristic. Automatically pushes state change notifications to connected clients. Re-advertises on disconnect. |
-| **main** | `main.cpp` | Instantiates all modules, calls `init()` in `setup()`, and calls `update()` in `loop()`. |
+| **main** | `main.cpp` | Instantiates all modules, calls `init()` in `setup()`, calls `update()` in `loop()`, and prints `STATE:<state>` at boot and on every state change. |
 
 ---
 
@@ -216,7 +213,7 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 - Once retries are exhausted, the system enters `ERROR`. All motors are disabled.
 - `ERROR` (like `UNKNOWN`/`DOCKED`/`UNDOCKED`) is passively re-verified against the limit switches every `REST_RECHECK_INTERVAL_MS` (default 2s) — never by retrying a motor, only by reading where the switches say the mechanism actually is right now. If the physical evidence now genuinely and unambiguously supports `DOCKED` or `UNDOCKED`, `ERROR` clears itself automatically. A `RESET` command (or a fresh `DOCK`/`UNDOCK`) still works at any time and doesn't wait for the recheck interval.
 
-> **Fixed:** `commandUndock()`/`commandDock()` used to publish the new state (`currentState = UNDOCKING_M1` / `DOCKING_M2`) *before* calling `motorX.startUndocking()`/`startDocking()`. Since BLE writes (`CommandCallbacks::onWrite()`) run on the Bluedroid stack's own FreeRTOS task, concurrently with `update()` on the main loop task, there was a race window where `update()` could observe the new state before the motor's `moving` flag had actually flipped `true` — and immediately report `ERROR: M1 stopped but not undocked` without the motor ever moving. Both commands now start the motor *before* publishing the state, closing that window. See `git log -- src/DockingSystem.cpp`.
+> **Fixed:** `commandUndock()`/`commandDock()` used to publish the new state (`currentState = UNDOCKING_M1` / `DOCKING_M2`) *before* calling `motorX.startUndocking()`/`startDocking()`. Since BLE writes (`CommandCallbacks::onWrite()`, before BLE was removed) ran on the Bluedroid stack's own FreeRTOS task, concurrently with `update()` on the main loop task, there was a race window where `update()` could observe the new state before the motor's `moving` flag had actually flipped `true` — and immediately report `ERROR: M1 stopped but not undocked` without the motor ever moving. Both commands now start the motor *before* publishing the state, closing that window. See `git log -- src/DockingSystem.cpp`.
 
 ---
 
@@ -226,7 +223,7 @@ The propeller closer (Motor 3) always rests at its close limit and is **not** to
 |----------|--------|---------------------|
 | `UNDOCK` | Starts the full undocking sequence | `UNDOCKING_COMPLETE -- resting UNDOCKED` |
 | `DOCK`   | Starts the full docking sequence   | `DOCKING_COMPLETE -- resting DOCKED`   |
-| `RESET`  | Stops all motors immediately and re-derives the resting state from the limit switches (recovers from `ERROR`) | `[RESET] System recovered. State: <UNKNOWN\|DOCKED\|UNDOCKED>` — and notifies that state over BLE (see below) |
+| `RESET`  | Stops all motors immediately and re-derives the resting state from the limit switches (recovers from `ERROR`) | `[RESET] System recovered. State: <UNKNOWN\|DOCKED\|UNDOCKED>`, then `STATE:<state>` if it changed |
 | `STATUS` | Prints current state and every limit switch reading | `[STATUS] State=... M1_undock=... ...` |
 | `JOG1`   | Bench test: spins Motor 1 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
 | `JOG2`   | Bench test: spins Motor 2 for `JOG_DURATION_MS` (5s default), ignoring limit switches | `[JOG] Done.` |
@@ -283,25 +280,26 @@ Retrying stage: M1 undock
 
 ---
 
-## BLE Communication
+## Raspberry Pi Protocol (USB serial)
 
-The ESP32 runs a BLE GATT server that advertises as **`ESP_UGV`**. Any BLE central (Raspberry Pi, phone, etc.) can connect, send commands, and receive real-time status notifications.
+The Raspberry Pi drives the dock over the board's USB serial port (CP2102, 115200 8N1, `\n` line endings). On the Pi it appears as
+`/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`. The Pi-side client is `docking_controller.py` in the drone-pad-api-service repo.
 
-### GATT Service & Characteristics
+| Direction | Line | Meaning |
+|-----------|------|---------|
+| Pi → ESP32 | `DOCK` / `UNDOCK` / `RESET` / `STATUS` | Commands (see Serial Command API above) |
+| ESP32 → Pi | `STATE:<state>` | Emitted on every state change, and once at boot after `System Ready!` |
+| ESP32 → Pi | `[STATUS] State=<state> M1_undock=... Prop_close=...` | Reply to `STATUS`, with every limit switch reading |
+| ESP32 → Pi | `System busy, cannot ...` / `Unknown command...` | Command rejected |
+| ESP32 → Pi | `=== DOCKING SYSTEM STARTING ===` | Board (re)booted |
 
-| Element | UUID | Properties | Description |
-|---------|------|------------|-------------|
-| **Docking Service** | `4fafc201-1fb5-459e-8fcc-c5c9c331914b` | — | Container service |
-| **Command** | `beb5483e-36e1-4688-b7f5-ea07361b26a8` | **Write** | Write `DOCK` or `UNDOCK` as a UTF-8 string |
-| **Status** | `8c1c10ea-4536-4a5b-9c37-2f7a3e5c1d2b` | **Read + Notify** | Returns current state; auto-notifies on change |
+Every other line is human-readable log output and can be ignored by a program.
 
 ### Status Values
 
-The Status characteristic contains one of these UTF-8 strings:
-
 | Value | Meaning |
 |-------|---------|
-| `UNKNOWN` | Position not verified against the limit switches (e.g. very first boot before switches settle) |
+| `UNKNOWN` | Position not verified against the limit switches (e.g. switches disagree, or the mechanism is between positions) |
 | `DOCKED` | Stable resting state — drone secured |
 | `UNDOCKED` | Stable resting state — drone released, safe to fly |
 | `UNDOCKING_M1` | Motor 1 is undocking |
@@ -310,50 +308,29 @@ The Status characteristic contains one of these UTF-8 strings:
 | `DOCKING_M1` | Motor 1 is docking |
 | `DOCKING_PROP_OPEN` | Propeller closer opening |
 | `DOCKING_PROP_CLOSE` | Propeller closer closing again |
+| `TESTING` | A `JOG1`/`JOG2`/`JOG3` bench test is running |
 | `ERROR` | A stage exhausted its retries without its limit switch triggering |
 
-`DOCKED`/`UNDOCKED` are the two stable resting states — the firmware transitions directly into them and stays there. There's no separate transient "`*_COMPLETE`" status that then reverts to something generic; a BLE client should treat receiving `DOCKED`/`UNDOCKED` itself as the completion signal.
+`DOCKED`/`UNDOCKED` are the two stable resting states — the firmware transitions directly into them and stays there. A client should treat `STATE:DOCKED` / `STATE:UNDOCKED` arriving *after* the command's first busy state as the completion signal, and only count it as success if it is the state the command was meant to reach.
 
-> **Fixed:** `commandReset()` used to set both `currentState` and `lastReportedState` to the same value in the same call. `stateChanged()` (which drives BLE notifications) compares those two fields and only notifies when they differ — setting both left the Status characteristic frozen on whatever value it had before RESET, indefinitely, since nothing would ever look like a "change" again until the next real DOCK/UNDOCK. `commandReset()` now only touches `currentState`, so the next `update()` tick correctly sees the mismatch and notifies the re-derived state. See `git log -- src/DockingSystem.cpp`.
+> **Fixed:** `commandReset()` used to set both `currentState` and `lastReportedState` to the same value in the same call. `stateChanged()` compares those two fields and only reports when they differ — setting both left the reported state frozen on whatever value it had before RESET. `commandReset()` now only touches `currentState`, so the next loop tick sees the mismatch and emits the re-derived state. See `git log -- src/DockingSystem.cpp`.
 
-### Raspberry Pi Integration (Python `bleak` example)
-
-Install bleak on your Pi: `pip install bleak`
+### Example (Python, pyserial)
 
 ```python
-import asyncio
-from bleak import BleakClient
+import serial
 
-DEVICE_MAC = "B4:BF:E9:14:A1:66"   # Your ESP32's BLE MAC (base WiFi MAC + 2)
-CMD_UUID   = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-STATUS_UUID = "8c1c10ea-4536-4a5b-9c37-2f7a3e5c1d2b"
-
-def on_status(sender, data):
-    status = data.decode()
-    print(f"Status update: {status}")
-    if status == "UNDOCKED":
-        print("Undocking done! Safe to proceed.")
-    elif status == "DOCKED":
-        print("Docking done!")
-    elif status == "ERROR":
-        print("ERROR detected — check hardware.")
-
-async def main():
-    async with BleakClient(DEVICE_MAC) as client:
-        # Subscribe to status notifications
-        await client.start_notify(STATUS_UUID, on_status)
-
-        # Send undock command
-        await client.write_gatt_char(CMD_UUID, b"UNDOCK")
-        print("Sent UNDOCK command.")
-
-        # Wait and listen for status updates
-        await asyncio.sleep(30)
-
-asyncio.run(main())
+# Leave DTR/RTS at pyserial's defaults. The dev board's auto-reset circuit
+# fires when DTR and RTS differ, so toggling them one at a time resets the ESP32.
+with serial.Serial("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0",
+                   115200, timeout=1) as port:
+    port.write(b"STATUS\n")
+    for _ in range(10):
+        line = port.readline().decode(errors="replace").strip()
+        if line.startswith("[STATUS]"):
+            print(line)
+            break
 ```
-
-> **Tip:** You can find your ESP32's MAC address in the serial monitor output during boot, or by scanning with `bluetoothctl` on the Pi.
 
 ---
 
@@ -402,15 +379,6 @@ All configurable parameters live in [`include/Config.h`](include/Config.h):
 | `STAGE_RETRY_DELAY_MS` | 1000 | Non-blocking pause between a timed-out stage and its retry attempt |
 | `REST_RECHECK_INTERVAL_MS` | 2000 | How often `UNKNOWN`/`DOCKED`/`UNDOCKED`/`ERROR` are passively re-verified against the limit switches — lets a drifted reading self-correct, and lets `ERROR` clear itself if the switches now genuinely agree on `DOCKED`/`UNDOCKED` |
 
-### BLE Parameters
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `BLE_DEVICE_NAME` | `"ESP_UGV"` | The name advertised over BLE |
-| `BLE_SERVICE_UUID` | `4fafc201-...` | GATT service UUID |
-| `BLE_CMD_CHAR_UUID` | `beb5483e-...` | Command characteristic UUID |
-| `BLE_STATUS_CHAR_UUID` | `8c1c10ea-...` | Status characteristic UUID |
-
 ---
 
 ## Building & Flashing
@@ -432,6 +400,14 @@ pio run -t upload
 # Open serial monitor
 pio device monitor -b 115200
 ```
+
+### Flashing on the robot
+
+- Stop the Pi service that owns the port first: `sudo systemctl stop drone-pad`, then start it again afterwards.
+- Only 115200 baud is reliable on this board and cable: reads at 230400 and 460800 failed partway.
+- A full 4 MB backup of the last BLE firmware is kept on the Pi at
+  `~/Documents/drone-pad-api-service/reference/firmware_backups/esp32_dock_ble_firmware_2026-11-17.bin`.
+  Restore with `esptool --port /dev/ttyUSB1 --baud 115200 write-flash 0 <file>`.
 
 ### Upload Issues
 
